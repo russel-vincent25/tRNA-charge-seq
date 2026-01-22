@@ -36,9 +36,9 @@ class STATS_collection:
                                  'sample_name', 'replicate', 'barcode', 'species', 'tRNA_annotation', \
                                  'align_score', 'fmax_score', 'Ndeletions', 'Ninsertions', \
                                  'unique_annotation', 'tRNA_annotation_len', \
-                                 'align_5p_idx', 'align_3p_idx', 'align_5p_nt', 'align_3p_nts', \
+                                 'align_5p_idx', 'align_3p_idx', 'align_5p_nt', 'align_3p_nt', \
                                  'codon', 'anticodon', 'amino_acid', '5p_cover', '3p_cover', \
-                                 '5p_non-temp', '3p-non-temp', '5p_UMI', '3p_BC', \
+                                 '5p_non-temp', '3p_non-temp', '5p_UMI', '3p_BC', \
                                  'align_gap', 'fmax_score>0.9', 'UMIcount', 'count']
 
         # Adding new classification fields
@@ -50,15 +50,9 @@ class STATS_collection:
         # Update Aggregated Statistics Columns
         self.stats_agg_cols = ['sample_name_unique', 'sample_name', 'replicate', 'barcode', 'species', \
                                'tRNA_annotation', 'tRNA_annotation_len', 'unique_annotation', \
-                               '5p_cover', '3p_cover', 'align_5p_idx', 'align_3p_idx', 'align_3p_nts', \
-                               '3p_non-temp', 'codon', 'anticodon', 'amino_acid', \
-                               'align_gap', 'fmax_score>0.9', 'UMIcount', 'count']
-
-        # Adding the 3' end charge categories and new classifications
-        self.stats_agg_cols.extend([
-            "Total_CA", "Total_GA", "Total_CC", "Total_CG",
-            "Total_5p_tRFs", "Total_Degraded", "Total_Pre_tRNA"
-        ])
+                               '5p_cover', '3p_cover', 'align_3p_nt', 'codon', 'anticodon', 'amino_acid', \
+                               'align_gap', 'fmax_score>0.9', 'UMIcount', 'count', 'is_5p_tRF', \
+                               'is_degraded_tRNA', 'is_pre_tRNA']
 
         self.tRNA_data, self.sample_df = tRNA_data, sample_df
         self.dir_dict = dir_dict
