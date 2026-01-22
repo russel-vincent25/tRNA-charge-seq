@@ -45,20 +45,38 @@ class TRNA_plot:
                                  'sample_name', 'replicate', 'barcode', 'species', 'tRNA_annotation', \
                                  'align_score', 'fmax_score', 'Ndeletions', 'Ninsertions', \
                                  'unique_annotation', 'tRNA_annotation_len', \
-                                 'align_5p_idx', 'align_3p_idx', 'align_5p_nt', 'align_3p_nt', \
+                                 'align_5p_idx', 'align_3p_idx', 'align_5p_nt', 'align_3p_nts', \
                                  'codon', 'anticodon', 'amino_acid', '5p_cover', '3p_cover', \
                                  '5p_non-temp', '3p_non-temp', '5p_UMI', '3p_BC', \
                                  'align_gap', 'fmax_score>0.9', 'UMIcount', 'count']
+        # Adding new classification fields
+        self.stats_csv_header.extend([
+            "is_5p_tRF", "is_degraded_tRNA", "is_pre_tRNA",
+            "5p_non_temp_seq", "3p_non_temp_seq"
+        ])
         self.stats_csv_header_type = [str, bool, str, str, int, str, str, str, int, float, \
                                       int, int, str, int, int, int, str, str, str, str, str, \
                                       bool, bool, str, str, str, str, bool, bool, int, int]
+        # Adding new classification fields
+        self.stats_csv_header_type.extend([
+            bool, bool, bool, str, str
+        ])
         self.stats_csv_header_td = {nam:tp for nam, tp in zip(self.stats_csv_header, self.stats_csv_header_type)}
+        
         self.stats_agg_cols = ['sample_name_unique', 'sample_name', 'replicate', 'barcode', 'species', \
                                'tRNA_annotation', 'tRNA_annotation_len', 'unique_annotation', \
-                               '5p_cover', 'align_3p_nt', 'codon', 'anticodon', 'amino_acid', \
+                               '5p_cover','3p_cover','align_5p_idx', 'align_3p_idx', 'align_3p_nts','3p_non-temp','codon', 'anticodon', 'amino_acid', \
                                'align_gap', 'fmax_score>0.9', 'UMIcount', 'count', 'UMI_percent_exp']
+        # Adding the 3' end charge categories and new classifications
+        self.stats_agg_cols.extend([
+            "Total_CA", "Total_GA", "Total_CC", "Total_CG",
+            "Total_5p_tRFs", "Total_Degraded", "Total_Pre_tRNA"
+        ])            
         self.stats_agg_cols_type = [str, str, int, str, str, str, int, bool, \
-                                    bool, str, str, str, str, bool, bool, int, int, float]
+                                    bool, bool, int, int, str, str , str, str, str, bool, bool, int, int, float]
+        self.stats_agg_cols_type.extend([
+            int, int, int, int, int, int, int
+        ])
         self.stats_agg_cols_td = {nam:tp for nam, tp in zip(self.stats_agg_cols, self.stats_agg_cols_type)}
 
         # Input:
@@ -131,20 +149,23 @@ class TRNA_plot:
             single_aa.append(sa)
         self.all_stats['single_aa'] = single_aa
         self.all_stats['mito_codon'] = ['mito_tRNA' in anno for anno in self.all_stats['tRNA_annotation'].values]
-        self.all_stats['Syn_ctr'] = ['Escherichia_coli' in anno and sp != 'ecoli' for sp, anno in zip(self.all_stats['species'].values, self.all_stats['tRNA_annotation'].values)]
+        self.all_stats['Syn_ctr'] = ['Synthetic' in anno and sp != 'ecoli' for sp, anno in zip(self.all_stats['species'].values, self.all_stats['tRNA_annotation'].values)]
         # Add new columns to stats_agg:
         self.stats_agg_cols = ['sample_name_unique', 'sample_name', 'replicate', 'barcode', 'species', \
                                'tRNA_annotation', 'tRNA_anno_short', 'tRNA_annotation_len', 'unique_annotation', \
-                               '5p_cover', 'align_3p_nt', 'codon', 'anticodon', 'amino_acid', 'AA_letter', \
+                               '5p_cover', '3p_cover','align_3p_nts', 'codon', 'anticodon', 'amino_acid', 'AA_letter', \
                                'AA_codon', 'single_codon', 'single_aa', 'mito_codon', 'Syn_ctr', \
-                               'align_gap', 'fmax_score>0.9', 'UMIcount', 'count']
+                               'align_gap', 'fmax_score>0.9', 'UMIcount', 'count','is_5p_tRF', \
+                               'is_degraded_tRNA', 'is_pre_tRNA','5p_non_temp_seq', '3p_non_temp_seq']
         self.stats_agg_cols_td = {'sample_name_unique': str, 'sample_name': str, 'replicate': int, \
                                   'barcode': str, 'species': str, 'tRNA_annotation': str, 'tRNA_anno_short': str, \
                                   'tRNA_annotation_len': int, 'unique_annotation': bool, \
-                                  '5p_cover': bool, 'align_3p_nt': str, 'codon': str, 'anticodon': str, 'amino_acid': str, 'AA_letter': str, \
+                                  '5p_cover': bool, '3p_cover':bool, 'align_3p_nts': str, 'codon': str, 'anticodon': str, 'amino_acid': str, 'AA_letter': str, \
                                   'AA_codon': str, 'single_codon': bool, 'single_aa': bool, 'mito_codon': bool, 'Syn_ctr': bool, \
-                                  'align_gap': bool, 'fmax_score>0.9': bool, 'UMIcount': int, 'count': int}
-
+                                  'align_gap': bool, 'fmax_score>0.9': bool, 'UMIcount': int, 'count': int, \
+                                  'is_5p_tRF': bool, 'is_degraded_tRNA': bool, 'is_pre_tRNA': bool, \
+                                  '5p_non_temp_seq': str, '3p_non_temp_seq': str}
+        
         # Reorder columns:
         self.all_stats = self.all_stats.loc[:, self.stats_agg_cols].copy()
         # Calculate charge and create dataframe:
@@ -174,23 +195,42 @@ class TRNA_plot:
         if self.excl_09_fmax:
             row_mask &= (self.all_stats['fmax_score>0.9'])
         charge_df = self.all_stats.loc[row_mask, self.stats_agg_cols].copy()
+        # Rearrange the columns of charge_df such that count and UMIcount are last:
+        charge_df = charge_df[[col for col in charge_df.columns if col not in ['count', 'UMIcount']] + ['count', 'UMIcount']]
+        # Group by all columns expcept count and UMIcount:
         charge_df = charge_df.groupby(self.stats_agg_cols[:-2], as_index=False).agg({'count': "sum", 'UMIcount': "sum"}).reset_index(drop=True)
 
-        # Count A and C endings:
-        charge_df['A_count'] = [ct if nt == 'A' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nt'])]
-        charge_df['C_count'] = [ct if nt == 'C' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nt'])]
+        # Count A, C, G endings:
+        charge_df['CA_count'] = [ct if nt == 'CA' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
+        charge_df['CC_count'] = [ct if nt == 'CC' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
+        charge_df['GA_count'] = [ct if nt == 'GA' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
+        charge_df['CG_count'] = [ct if nt == 'GC' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
+        # Count 5' tRFs, degraded and pre-tRNAs for boolean columns:
+        charge_df['5p_tRF'] = [ct if tRF else 0 for ct, tRF in zip(charge_df[self.charge_count_col], charge_df['is_5p_tRF'])]
+        charge_df['degraded'] = [ct if deg else 0 for ct, deg in zip(charge_df[self.charge_count_col], charge_df['is_degraded_tRNA'])]
+        charge_df['pre_tRNA'] = [ct if pre else 0 for ct, pre in zip(charge_df[self.charge_count_col], charge_df['is_pre_tRNA'])]
+        
         # Group transcripts with different 3p nt.
         # then calculate charge:
         charge_df_cols = copy.deepcopy(self.stats_agg_cols)
-        charge_df_cols.remove('align_3p_nt')
+        charge_df_cols.remove('align_3p_nts')
         charge_df_cols.remove('align_gap')
         charge_df_cols.remove('fmax_score>0.9')
-        charge_df_cols.extend(['A_count', 'C_count'])
-        charge_df = charge_df.groupby(charge_df_cols[:-4], as_index=False).agg({'count': "sum", \
+        charge_df_cols.extend(['CA_count', 'CC_count', 'GA_count', 'CG_count', '5p_tRF', 'degraded', 'pre_tRNA'])
+
+        charge_df = charge_df.groupby(charge_df_cols[:-9], as_index=False).agg({'count': "sum", \
                                                                                 'UMIcount': "sum", \
-                                                                                'A_count': "sum", \
-                                                                                'C_count': "sum"}).reset_index(drop=True)
-        charge_df['charge'] = 100 * charge_df['A_count'] / (charge_df['A_count'] + charge_df['C_count'])
+                                                                                'CA_count': "sum", \
+                                                                                'CC_count': "sum", \
+                                                                                'GA_count': "sum", \
+                                                                                'CG_count': "sum", \
+                                                                                '5p_tRF': "sum", \
+                                                                                'degraded': "sum", \
+                                                                                'pre_tRNA': "sum"}).reset_index(drop=True)
+        charge_df['charge_canonical'] = 100 * charge_df['CA_count'] / (charge_df['CA_count'] + charge_df['CC_count'] + charge_df['5p_tRF'] + charge_df['degraded'])
+        charge_df['charge_non-canonical'] = 100 * charge_df['GA_count'] / (charge_df['GA_count'] + charge_df['CG_count'] + charge_df['5p_tRF'] + charge_df['degraded'])
+        charge_df['tRNA_fragment'] = (charge_df['5p_tRF'] + charge_df['degraded']) / charge_df['count']
+
         # Add the sample total count to the rows:
         df_count = charge_df[~charge_df['Syn_ctr']].groupby(['sample_name_unique'], as_index=False).agg({self.RPM_count_col: "sum"}).reset_index(drop=True)
         charge_df = charge_df.merge(df_count, on='sample_name_unique', suffixes=('', '_sample_tot'))
@@ -202,12 +242,19 @@ class TRNA_plot:
         aa_mask = charge_df['single_aa']
         charge_df_aa = charge_df[aa_mask].groupby(['sample_name_unique', 'sample_name', 'replicate', \
                                                    'barcode', 'amino_acid', 'AA_letter', 'mito_codon', \
-                                                   'Syn_ctr'], as_index=False).agg({"count": "sum", \
-                                                                                      "UMIcount": "sum", \
-                                                                                      "A_count": "sum", \
-                                                                                      "C_count": "sum", \
-                                                                                      "RPM": "sum"}).reset_index(drop=True)
-        charge_df_aa['charge'] = 100 * charge_df_aa['A_count'] / (charge_df_aa['A_count'] + charge_df_aa['C_count'])
+                                                   'Syn_ctr'], as_index=False).agg({'count': "sum", \
+                                                                                    'UMIcount': "sum", \
+                                                                                    'CA_count': "sum", \
+                                                                                    'CC_count': "sum", \
+                                                                                    'GA_count': "sum", \
+                                                                                    'CG_count': "sum", \
+                                                                                    '5p_tRF': "sum", \
+                                                                                    'degraded': "sum", \
+                                                                                    'pre_tRNA': "sum", \
+                                                                                    'RPM': "sum"}).reset_index(drop=True)
+        charge_df_aa['charge_canonical'] = 100 * charge_df_aa['CA_count'] / (charge_df_aa['CA_count'] + charge_df_aa['CC_count'] + charge_df_aa['5p_tRF'] + charge_df_aa['degraded'])
+        charge_df_aa['charge_non-canonical'] = 100 * charge_df_aa['GA_count'] / (charge_df_aa['GA_count'] + charge_df_aa['CG_count'] + charge_df_aa['5p_tRF'] + charge_df_aa['degraded'])
+        charge_df_aa['tRNA_fragment'] = (charge_df_aa['5p_tRF'] + charge_df_aa['degraded']) / charge_df_aa['count']
         self.charge_filt['aa'] = charge_df_aa
 
         # Filter and group by same codon:
@@ -215,12 +262,19 @@ class TRNA_plot:
         charge_df_cd = charge_df[cd_mask].groupby(['sample_name_unique', 'sample_name', 'replicate', \
                                                    'barcode', 'codon', 'anticodon', 'AA_codon', \
                                                    'amino_acid', 'AA_letter', 'mito_codon', \
-                                                   'Syn_ctr'], as_index=False).agg({"count": "sum", \
-                                                                                      "UMIcount": "sum", \
-                                                                                      "A_count": "sum", \
-                                                                                      "C_count": "sum", \
-                                                                                      "RPM": "sum"}).reset_index(drop=True)
-        charge_df_cd['charge'] = 100 * charge_df_cd['A_count'] / (charge_df_cd['A_count'] + charge_df_cd['C_count'])
+                                                   'Syn_ctr'], as_index=False).agg({'count': "sum", \
+                                                                                    'UMIcount': "sum", \
+                                                                                    'CA_count': "sum", \
+                                                                                    'CC_count': "sum", \
+                                                                                    'GA_count': "sum", \
+                                                                                    'CG_count': "sum", \
+                                                                                    '5p_tRF': "sum", \
+                                                                                    'degraded': "sum", \
+                                                                                    'pre_tRNA': "sum", \
+                                                                                    'RPM': "sum"}).reset_index(drop=True)
+        charge_df_cd['charge_canonical'] = 100 * charge_df_cd['CA_count'] / (charge_df_cd['CA_count'] + charge_df_cd['CC_count'] + charge_df_cd['5p_tRF'] + charge_df_cd['degraded'])
+        charge_df_cd['charge_non-canonical'] = 100 * charge_df_cd['GA_count'] / (charge_df_cd['GA_count'] + charge_df_cd['CG_count'] + charge_df_cd['5p_tRF'] + charge_df_cd['degraded'])
+        charge_df_cd['tRNA_fragment'] = (charge_df_cd['5p_tRF'] + charge_df_cd['degraded']) / charge_df_cd['count']
         self.charge_filt['codon'] = charge_df_cd
 
         # Filter and group by same transcript:
@@ -229,12 +283,20 @@ class TRNA_plot:
                                                    'barcode', 'tRNA_annotation', 'tRNA_anno_short', \
                                                    'tRNA_annotation_len', 'codon', 'anticodon', 'AA_codon', \
                                                    'amino_acid', 'AA_letter', 'mito_codon', \
-                                                   'Syn_ctr'], as_index=False).agg({"count": "sum", \
-                                                                                      "UMIcount": "sum", \
-                                                                                      "A_count": "sum", \
-                                                                                      "C_count": "sum", \
-                                                                                      "RPM": "sum"}).reset_index(drop=True)
-        charge_df_tr['charge'] = 100 * charge_df_tr['A_count'] / (charge_df_tr['A_count'] + charge_df_tr['C_count'])
+                                                   'Syn_ctr'], as_index=False).agg({'count': "sum", \
+                                                                                    'UMIcount': "sum", \
+                                                                                    'CA_count': "sum", \
+                                                                                    'CC_count': "sum", \
+                                                                                    'GA_count': "sum", \
+                                                                                    'CG_count': "sum", \
+                                                                                    '5p_tRF': "sum", \
+                                                                                    'degraded': "sum", \
+                                                                                    'pre_tRNA': "sum", \
+                                                                                    'RPM': "sum"}).reset_index(drop=True)
+
+        charge_df_tr['charge_canonical'] = 100 * charge_df_tr['CA_count'] / (charge_df_tr['CA_count'] + charge_df_tr['CC_count'] + charge_df_tr['5p_tRF'] + charge_df_tr['degraded'])
+        charge_df_tr['charge_non-canonical'] = 100 * charge_df_tr['GA_count'] / (charge_df_tr['GA_count'] + charge_df_tr['CG_count'] + charge_df_tr['5p_tRF'] + charge_df_tr['degraded'])
+        charge_df_tr['tRNA_fragment'] = (charge_df_tr['5p_tRF'] + charge_df_tr['degraded']) / charge_df_tr['count']
         self.charge_filt['tr'] = charge_df_tr
         self.charge_df = charge_df
 
@@ -946,9 +1008,8 @@ class TRNA_plot:
 
         # Choose rows from requested compartment:
         type_mask = (sample_stats['3p_cover'] == True) & \
-                    (sample_stats['3p_non-temp'] == '') & \
                     (sample_stats['5p_non-temp'].apply(len) <= max_5p_non_temp) & \
-                    ((sample_stats['align_3p_nt'] == 'A') | (sample_stats['align_3p_nt'] == 'C')) & \
+                    ((sample_stats['align_3p_nts'] == 'CA') | (sample_stats['align_3p_nts'] == 'CC') | (sample_stats['align_3p_nts'] == 'GA') | (sample_stats['align_3p_nts'] == 'CG')) & \
                     (sample_stats['single_codon']) & \
                     (~sample_stats['Syn_ctr']) & \
                     (sample_stats['AA_letter'].apply(len) == 1) & \
@@ -1027,8 +1088,6 @@ class TRNA_plot:
         cov_count_sum = np.vstack((np.zeros(cov_count_sum.shape[1]), cov_count_sum))
         title_info = (row['sample_name_unique'], cov_df[self.RPM_count_col].sum())
         return([cov_count, cov_count_sum, aa_ordered_list, title_info])
-
-
 
 def freq2ratio(freq):
     '''Convert frequency to ratio.'''
