@@ -131,18 +131,18 @@ class TRNA_plot:
             single_aa.append(sa)
         self.all_stats['single_aa'] = single_aa
         self.all_stats['mito_codon'] = ['mito_tRNA' in anno for anno in self.all_stats['tRNA_annotation'].values]
-        self.all_stats['Ecoli_ctr'] = ['Escherichia_coli' in anno and sp != 'ecoli' for sp, anno in zip(self.all_stats['species'].values, self.all_stats['tRNA_annotation'].values)]
+        self.all_stats['Syn_ctr'] = ['Escherichia_coli' in anno and sp != 'ecoli' for sp, anno in zip(self.all_stats['species'].values, self.all_stats['tRNA_annotation'].values)]
         # Add new columns to stats_agg:
         self.stats_agg_cols = ['sample_name_unique', 'sample_name', 'replicate', 'barcode', 'species', \
                                'tRNA_annotation', 'tRNA_anno_short', 'tRNA_annotation_len', 'unique_annotation', \
                                '5p_cover', 'align_3p_nt', 'codon', 'anticodon', 'amino_acid', 'AA_letter', \
-                               'AA_codon', 'single_codon', 'single_aa', 'mito_codon', 'Ecoli_ctr', \
+                               'AA_codon', 'single_codon', 'single_aa', 'mito_codon', 'Syn_ctr', \
                                'align_gap', 'fmax_score>0.9', 'UMIcount', 'count']
         self.stats_agg_cols_td = {'sample_name_unique': str, 'sample_name': str, 'replicate': int, \
                                   'barcode': str, 'species': str, 'tRNA_annotation': str, 'tRNA_anno_short': str, \
                                   'tRNA_annotation_len': int, 'unique_annotation': bool, \
                                   '5p_cover': bool, 'align_3p_nt': str, 'codon': str, 'anticodon': str, 'amino_acid': str, 'AA_letter': str, \
-                                  'AA_codon': str, 'single_codon': bool, 'single_aa': bool, 'mito_codon': bool, 'Ecoli_ctr': bool, \
+                                  'AA_codon': str, 'single_codon': bool, 'single_aa': bool, 'mito_codon': bool, 'Syn_ctr': bool, \
                                   'align_gap': bool, 'fmax_score>0.9': bool, 'UMIcount': int, 'count': int}
 
         # Reorder columns:
@@ -192,7 +192,7 @@ class TRNA_plot:
                                                                                 'C_count': "sum"}).reset_index(drop=True)
         charge_df['charge'] = 100 * charge_df['A_count'] / (charge_df['A_count'] + charge_df['C_count'])
         # Add the sample total count to the rows:
-        df_count = charge_df[~charge_df['Ecoli_ctr']].groupby(['sample_name_unique'], as_index=False).agg({self.RPM_count_col: "sum"}).reset_index(drop=True)
+        df_count = charge_df[~charge_df['Syn_ctr']].groupby(['sample_name_unique'], as_index=False).agg({self.RPM_count_col: "sum"}).reset_index(drop=True)
         charge_df = charge_df.merge(df_count, on='sample_name_unique', suffixes=('', '_sample_tot'))
         # Calculated the RPM and get rid of the total count:
         charge_df['RPM'] = charge_df[self.RPM_count_col] / (charge_df['{}_sample_tot'.format(self.RPM_count_col)] / 1e6)
@@ -202,7 +202,7 @@ class TRNA_plot:
         aa_mask = charge_df['single_aa']
         charge_df_aa = charge_df[aa_mask].groupby(['sample_name_unique', 'sample_name', 'replicate', \
                                                    'barcode', 'amino_acid', 'AA_letter', 'mito_codon', \
-                                                   'Ecoli_ctr'], as_index=False).agg({"count": "sum", \
+                                                   'Syn_ctr'], as_index=False).agg({"count": "sum", \
                                                                                       "UMIcount": "sum", \
                                                                                       "A_count": "sum", \
                                                                                       "C_count": "sum", \
@@ -215,7 +215,7 @@ class TRNA_plot:
         charge_df_cd = charge_df[cd_mask].groupby(['sample_name_unique', 'sample_name', 'replicate', \
                                                    'barcode', 'codon', 'anticodon', 'AA_codon', \
                                                    'amino_acid', 'AA_letter', 'mito_codon', \
-                                                   'Ecoli_ctr'], as_index=False).agg({"count": "sum", \
+                                                   'Syn_ctr'], as_index=False).agg({"count": "sum", \
                                                                                       "UMIcount": "sum", \
                                                                                       "A_count": "sum", \
                                                                                       "C_count": "sum", \
@@ -229,7 +229,7 @@ class TRNA_plot:
                                                    'barcode', 'tRNA_annotation', 'tRNA_anno_short', \
                                                    'tRNA_annotation_len', 'codon', 'anticodon', 'AA_codon', \
                                                    'amino_acid', 'AA_letter', 'mito_codon', \
-                                                   'Ecoli_ctr'], as_index=False).agg({"count": "sum", \
+                                                   'Syn_ctr'], as_index=False).agg({"count": "sum", \
                                                                                       "UMIcount": "sum", \
                                                                                       "A_count": "sum", \
                                                                                       "C_count": "sum", \
@@ -251,7 +251,7 @@ class TRNA_plot:
         fnam_abs = '{}/{}.csv'.format(self.plotting_dir_abs, fnam)
         charge_df_type.to_csv(fnam_abs, header=True, index=False)
 
-    def plot_Ecoli_ctr(self, plot_name='ecoli-ctr_charge_plot', sample_list=None,
+    def plot_Syn_ctr(self, plot_name='ecoli-ctr_charge_plot', sample_list=None,
                        charge_plot=True, min_obs=1, \
                        sample_list_exl=None, bc_list_exl=None):
 
@@ -280,7 +280,7 @@ class TRNA_plot:
                 sample_mask &= (charge_df_type['barcode'] != bc)
 
         # Only take rows with Ecoli controls:
-        sample_mask &= charge_df_type['Ecoli_ctr'] & (charge_df_type[count_col] >= min_obs)
+        sample_mask &= charge_df_type['Syn_ctr'] & (charge_df_type[count_col] >= min_obs)
         charge_sample = charge_df_type[sample_mask].copy()
         
         # Different settings for different plot types:
@@ -383,8 +383,8 @@ class TRNA_plot:
 
                 charge_sample = charge_df_type[sample_mask].copy()
                 # Plot separate for mito/cyto:
-                mask_cyto = (~charge_sample['Ecoli_ctr']) & (~charge_sample['mito_codon'])
-                mask_mito = (~charge_sample['Ecoli_ctr']) & (charge_sample['mito_codon'])
+                mask_cyto = (~charge_sample['Syn_ctr']) & (~charge_sample['mito_codon'])
+                mask_mito = (~charge_sample['Syn_ctr']) & (charge_sample['mito_codon'])
 
                 # Different settings for different plot types:
                 Ngrp = len(set(charge_sample['sample_name']))
@@ -428,8 +428,8 @@ class TRNA_plot:
                         x_axis = 'tRNA_anno_short'
                     else:
                         x_axis = 'tRNA_annotation'
-                    mask_cyto = (~charge_sample['Ecoli_ctr']) & (~charge_sample['mito_codon'])
-                    mask_mito = (~charge_sample['Ecoli_ctr']) & (charge_sample['mito_codon'])
+                    mask_cyto = (~charge_sample['Syn_ctr']) & (~charge_sample['mito_codon'])
+                    mask_mito = (~charge_sample['Syn_ctr']) & (charge_sample['mito_codon'])
                     x_list_cyto = sorted(set(charge_sample[x_axis][mask_cyto].values), key=str.casefold)
                     x_list_mito = sorted(set(charge_sample[x_axis][mask_mito].values), key=str.casefold)
                     colors_cyto = None
@@ -504,13 +504,13 @@ class TRNA_plot:
 
         if plot_type == 'aa':
             charge_df_type = self.charge_filt['aa'].copy()
-            merge_on = ['amino_acid', 'mito_codon', 'Ecoli_ctr']
+            merge_on = ['amino_acid', 'mito_codon', 'Syn_ctr']
         elif plot_type == 'codon':
             charge_df_type = self.charge_filt['codon'].copy()
-            merge_on = ['AA_codon', 'mito_codon', 'Ecoli_ctr']
+            merge_on = ['AA_codon', 'mito_codon', 'Syn_ctr']
         elif plot_type == 'transcript':
             charge_df_type = self.charge_filt['tr'].copy()
-            merge_on = ['tRNA_annotation', 'mito_codon', 'Ecoli_ctr']
+            merge_on = ['tRNA_annotation', 'mito_codon', 'Syn_ctr']
         else:
             raise Exception('Unknown plot type specified: {}\nValid strings are either either "aa", "codon" or "transcript".'.format(plot_type))
 
@@ -523,7 +523,7 @@ class TRNA_plot:
 
         # Enforce minimum observations,
         # and not Ecoli control:
-        min_obs_mask = (charge_df_type[count_col] > min_obs) & ~charge_df_type['Ecoli_ctr']
+        min_obs_mask = (charge_df_type[count_col] > min_obs) & ~charge_df_type['Syn_ctr']
         charge_df_type = charge_df_type[min_obs_mask]
 
         # Handle if input is unique sample names
@@ -939,7 +939,7 @@ class TRNA_plot:
                     sc = False
             single_codon.append(sc)
         sample_stats['single_codon'] = single_codon
-        sample_stats['Ecoli_ctr'] = ['Escherichia_coli' in anno and sp != 'ecoli' for sp, anno in zip(sample_stats['species'].values, sample_stats['tRNA_annotation'].values)]
+        sample_stats['Syn_ctr'] = ['Escherichia_coli' in anno and sp != 'ecoli' for sp, anno in zip(sample_stats['species'].values, sample_stats['tRNA_annotation'].values)]
         sample_stats['mito_codon'] = ['mito_tRNA' in anno for anno in sample_stats['tRNA_annotation'].values]
         # Translate codon into single letter amino acid:
         sample_stats['AA_letter'] = [AAA2A[AAA] for AAA in sample_stats['amino_acid'].values]
@@ -950,7 +950,7 @@ class TRNA_plot:
                     (sample_stats['5p_non-temp'].apply(len) <= max_5p_non_temp) & \
                     ((sample_stats['align_3p_nt'] == 'A') | (sample_stats['align_3p_nt'] == 'C')) & \
                     (sample_stats['single_codon']) & \
-                    (~sample_stats['Ecoli_ctr']) & \
+                    (~sample_stats['Syn_ctr']) & \
                     (sample_stats['AA_letter'].apply(len) == 1) & \
                     (sample_stats['AA_letter'] != 'X')
         if row['compartment'] == 'mito':
