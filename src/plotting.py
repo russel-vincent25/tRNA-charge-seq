@@ -204,7 +204,7 @@ class TRNA_plot:
         charge_df['CA_count'] = [ct if nt == 'CA' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
         charge_df['CC_count'] = [ct if nt == 'CC' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
         charge_df['GA_count'] = [ct if nt == 'GA' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
-        charge_df['CG_count'] = [ct if nt == 'GC' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
+        charge_df['CG_count'] = [ct if nt == 'CG' else 0 for ct, nt in zip(charge_df[self.charge_count_col], charge_df['align_3p_nts'])]
         # Count 5' tRFs, degraded and pre-tRNAs for boolean columns:
         charge_df['5p_tRF'] = [ct if tRF else 0 for ct, tRF in zip(charge_df[self.charge_count_col], charge_df['is_5p_tRF'])]
         charge_df['degraded'] = [ct if deg else 0 for ct, deg in zip(charge_df[self.charge_count_col], charge_df['is_degraded_tRNA'])]
@@ -227,9 +227,14 @@ class TRNA_plot:
                                                                                 '5p_tRF': "sum", \
                                                                                 'degraded': "sum", \
                                                                                 'pre_tRNA': "sum"}).reset_index(drop=True)
-        charge_df['charge_canonical'] = 100 * charge_df['CA_count'] / (charge_df['CA_count'] + charge_df['CC_count'] + charge_df['5p_tRF'] + charge_df['degraded'])
-        charge_df['charge_non-canonical'] = 100 * charge_df['GA_count'] / (charge_df['GA_count'] + charge_df['CG_count'] + charge_df['5p_tRF'] + charge_df['degraded'])
-        charge_df['tRNA_fragment'] = (charge_df['5p_tRF'] + charge_df['degraded']) / charge_df['count']
+        charge_df['charge_canonical'] = charge_df.apply(
+            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df['charge_non-canonical'] = charge_df.apply(
+            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df['tRNA_fragment'] = charge_df.apply(
+            lambda row: (row['5p_tRF'] + row['degraded']) / row['count'] if row['count'] > 0 else np.nan, axis=1)
 
         # Add the sample total count to the rows:
         df_count = charge_df[~charge_df['Syn_ctr']].groupby(['sample_name_unique'], as_index=False).agg({self.RPM_count_col: "sum"}).reset_index(drop=True)
@@ -252,9 +257,14 @@ class TRNA_plot:
                                                                                     'degraded': "sum", \
                                                                                     'pre_tRNA': "sum", \
                                                                                     'RPM': "sum"}).reset_index(drop=True)
-        charge_df_aa['charge_canonical'] = 100 * charge_df_aa['CA_count'] / (charge_df_aa['CA_count'] + charge_df_aa['CC_count'] + charge_df_aa['5p_tRF'] + charge_df_aa['degraded'])
-        charge_df_aa['charge_non-canonical'] = 100 * charge_df_aa['GA_count'] / (charge_df_aa['GA_count'] + charge_df_aa['CG_count'] + charge_df_aa['5p_tRF'] + charge_df_aa['degraded'])
-        charge_df_aa['tRNA_fragment'] = (charge_df_aa['5p_tRF'] + charge_df_aa['degraded']) / charge_df_aa['count']
+        charge_df_aa['charge_canonical'] = charge_df_aa.apply(
+            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df_aa['charge_non-canonical'] = charge_df_aa.apply(
+            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df_aa['tRNA_fragment'] = charge_df_aa.apply(
+            lambda row: (row['5p_tRF'] + row['degraded']) / row['count'] if row['count'] > 0 else np.nan, axis=1)
         self.charge_filt['aa'] = charge_df_aa
 
         # Filter and group by same codon:
@@ -272,9 +282,14 @@ class TRNA_plot:
                                                                                     'degraded': "sum", \
                                                                                     'pre_tRNA': "sum", \
                                                                                     'RPM': "sum"}).reset_index(drop=True)
-        charge_df_cd['charge_canonical'] = 100 * charge_df_cd['CA_count'] / (charge_df_cd['CA_count'] + charge_df_cd['CC_count'] + charge_df_cd['5p_tRF'] + charge_df_cd['degraded'])
-        charge_df_cd['charge_non-canonical'] = 100 * charge_df_cd['GA_count'] / (charge_df_cd['GA_count'] + charge_df_cd['CG_count'] + charge_df_cd['5p_tRF'] + charge_df_cd['degraded'])
-        charge_df_cd['tRNA_fragment'] = (charge_df_cd['5p_tRF'] + charge_df_cd['degraded']) / charge_df_cd['count']
+        charge_df_cd['charge_canonical'] = charge_df_cd.apply(
+            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df_cd['charge_non-canonical'] = charge_df_cd.apply(
+            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df_cd['tRNA_fragment'] = charge_df_cd.apply(
+            lambda row: (row['5p_tRF'] + row['degraded']) / row['count'] if row['count'] > 0 else np.nan, axis=1)
         self.charge_filt['codon'] = charge_df_cd
 
         # Filter and group by same transcript:
@@ -294,9 +309,14 @@ class TRNA_plot:
                                                                                     'pre_tRNA': "sum", \
                                                                                     'RPM': "sum"}).reset_index(drop=True)
 
-        charge_df_tr['charge_canonical'] = 100 * charge_df_tr['CA_count'] / (charge_df_tr['CA_count'] + charge_df_tr['CC_count'] + charge_df_tr['5p_tRF'] + charge_df_tr['degraded'])
-        charge_df_tr['charge_non-canonical'] = 100 * charge_df_tr['GA_count'] / (charge_df_tr['GA_count'] + charge_df_tr['CG_count'] + charge_df_tr['5p_tRF'] + charge_df_tr['degraded'])
-        charge_df_tr['tRNA_fragment'] = (charge_df_tr['5p_tRF'] + charge_df_tr['degraded']) / charge_df_tr['count']
+        charge_df_tr['charge_canonical'] = charge_df_tr.apply(
+            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df_tr['charge_non-canonical'] = charge_df_tr.apply(
+            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded'])
+            if (row['GA_count'] + row['CG_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
+        charge_df_tr['tRNA_fragment'] = charge_df_tr.apply(
+            lambda row: (row['5p_tRF'] + row['degraded']) / row['count'] if row['count'] > 0 else np.nan, axis=1)
         self.charge_filt['tr'] = charge_df_tr
         self.charge_df = charge_df
 
