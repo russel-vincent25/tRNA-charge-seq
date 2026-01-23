@@ -16,6 +16,7 @@
 # Development stuff:
 **/dev_stuff
 sandbox.ipynb
+/plans
 
 # Data folder (to big for Github)
 /projects/**/*.fasta
