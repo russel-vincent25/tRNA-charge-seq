@@ -227,6 +227,7 @@ class TRNA_plot:
                                                                                 '5p_tRF': "sum", \
                                                                                 'degraded': "sum", \
                                                                                 'pre_tRNA': "sum"}).reset_index(drop=True)
+        # Safe division with NaN for zero denominators
         charge_df['charge_canonical'] = charge_df.apply(
             lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
             if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
@@ -257,6 +258,7 @@ class TRNA_plot:
                                                                                     'degraded': "sum", \
                                                                                     'pre_tRNA': "sum", \
                                                                                     'RPM': "sum"}).reset_index(drop=True)
+        # Safe division with NaN for zero denominators
         charge_df_aa['charge_canonical'] = charge_df_aa.apply(
             lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
             if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
@@ -282,6 +284,7 @@ class TRNA_plot:
                                                                                     'degraded': "sum", \
                                                                                     'pre_tRNA': "sum", \
                                                                                     'RPM': "sum"}).reset_index(drop=True)
+        # Safe division with NaN for zero denominators
         charge_df_cd['charge_canonical'] = charge_df_cd.apply(
             lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
             if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
@@ -309,6 +312,7 @@ class TRNA_plot:
                                                                                     'pre_tRNA': "sum", \
                                                                                     'RPM': "sum"}).reset_index(drop=True)
 
+        # Safe division with NaN for zero denominators
         charge_df_tr['charge_canonical'] = charge_df_tr.apply(
             lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded'])
             if (row['CA_count'] + row['CC_count'] + row['5p_tRF'] + row['degraded']) > 0 else np.nan, axis=1)
