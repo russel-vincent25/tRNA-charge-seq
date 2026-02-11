@@ -1,0 +1,59 @@
+# tRNA-charge-seq Preprocessing Configuration
+# ===========================================
+#
+# This configuration file defines all parameters for the unified
+# preprocessing pipeline (Stages 0-2: FASTQ → Stats CSV)
+
+# Sample and Index Information
+# -----------------------------
+sample_list: "projects/example/sample_list.xlsx"
+index_list: "utils/index_list.xlsx"
+
+# Input Data
+# ----------
+seq_dir: "raw_fastq"  # Directory containing FASTQ.bz2 files
+
+# tRNA Database
+# -------------
+tRNA_database:
+  human: "tRNA_database/human/hg38-tRNAs.fa"
+  mouse: "tRNA_database/mouse/mm10-tRNAs.fa"
+
+# Alignment Parameters
+# --------------------
+SWIPE_score_mat: "utils/nuc_score-matrix_2.txt"  # For masked references
+common_seqs: "utils/common-seqs_1k.fasta.bz2"  # Common sequences (optional)
+
+# Read Length and Quality
+# ------------------------
+min_read_len: 39  # MIN_INSERT_LEN (10) + UMI_LEN (10) + BC_MAX_LEN (19)
+min_score_align: 15  # Minimum SWIPE alignment score
+
+# Alignment Scoring
+# -----------------
+gap_penalty: 6
+extension_penalty: 3
+
+# Downsampling (optional)
+# -----------------------
+# Use one of these options, or set both to null for no downsampling
+downsample_percentile: null  # e.g., 50 for 50th percentile
+downsample_absolute: null    # e.g., 100000 for 100k reads max per sample
+
+# Processing Options
+# ------------------
+overwrite: true  # Overwrite existing output directories
+
+# Species-Specific Settings
+# --------------------------
+# For projects with multiple species, you can define species-specific databases
+# Example:
+# species: "human"  # or "mouse", "ecoli", etc.
+
+# Notes
+# -----
+# - All paths are relative to the repository root
+# - FASTQ files should be in bz2 format
+# - Sample list should have columns: sample_name_unique, sample_name, replicate,
+#   fastq_mate1_filename, fastq_mate2_filename, P5_index, P7_index, barcode, species
+# - Index list should define barcode_seq, P5_index_seq, P7_index_seq for each barcode/index

@@ -1,0 +1,85 @@
+name: tRNA-seq
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.10
+
+  # Core scientific computing (version constraints from beta test)
+  - numpy>=1.24.0,<1.26.0      # Issue #2: pandas 2.3.3 + numpy 1.26.4 breaks Excel reading
+  - pandas>=2.0.0,<2.2.0        # Issue #2: pandas 2.3.3 has Excel reading regression
+  - scipy>=1.11.0,<1.15.0       # Issue #1: scipy 1.15.3 breaks seaborn imports
+
+  # Data visualization
+  - matplotlib>=3.7.0
+  - seaborn==0.13.0             # Issue #1: Requires scipy <1.15.0
+  - logomaker>=0.8
+
+  # Jupyter environment
+  - jupyterlab>=4.0
+  - ipykernel
+  - notebook
+  - nbconvert
+
+  # Bioinformatics Python packages
+  - biopython>=1.80
+
+  # Parallel processing and utilities
+  - mpire>=2.10                 # Multiprocessing library
+  - jellyfish                   # String comparison library
+  - json_stream                 # Streaming JSON parser
+  - natsort                     # Natural sorting
+
+  # File format support
+  - openpyxl                    # Excel file support (.xlsx)
+  - xlrd                        # Excel file support (.xls)
+
+  # Image processing
+  - wand                        # ImageMagick Python bindings
+  - imagemagick                 # Image conversion tool
+  - pillow                      # Image processing
+
+  # Bioinformatics tools
+  - adapterremoval>=2.3         # Adapter trimming and read merging
+  - swipe>=2.0                  # Fast Smith-Waterman alignment
+  - blast>=2.5                  # BLAST tools (makeblastdb, blastn)
+
+  # Additional utilities
+  - bzip2                       # Compression support
+  - pigz                        # Parallel gzip
+
+  # Development and debugging (optional but recommended)
+  - ipdb                        # IPython debugger
+  - tqdm                        # Progress bars
+  - pytest                      # Testing framework
+
+pip:
+  # Any packages not available via conda can be listed here
+  # Currently all dependencies available via conda
+
+# Installation instructions:
+#
+# 1. Create environment:
+#    conda env create -f environment.yml
+#
+# 2. Activate environment:
+#    conda activate tRNA-seq
+#
+# 3. Verify installation:
+#    python -c "import pandas, numpy, scipy, seaborn; print('Python packages OK')"
+#    AdapterRemoval --version
+#    swipe -h
+#    makeblastdb -version
+#
+# 4. Update environment (if needed):
+#    conda env update -f environment.yml --prune
+#
+# Notes:
+# - Version constraints based on beta testing (2026-02-11)
+# - scipy <1.15.0 required for seaborn compatibility
+# - numpy <1.26.0 and pandas <2.2.0 required for Excel file support
+# - All bioinformatics tools verified working with these versions
+# - See .claude/agent_sessions/notebook_beta_test_2026-02-11/issues_found.md for details

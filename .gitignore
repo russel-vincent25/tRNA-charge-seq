@@ -18,7 +18,6 @@
 sandbox.ipynb
 /plans # Feature implementation plans
 /.claude # Only need locally
-/trnaseq # New mods to the workflow
 
 # Data folder (to big for Github)
 /projects/**/*.fasta
@@ -49,9 +48,6 @@ utils/code-of-limited-use/sim_data/*
 
 # Data from collaborations
 /collab
-
-
-
 
 
 
