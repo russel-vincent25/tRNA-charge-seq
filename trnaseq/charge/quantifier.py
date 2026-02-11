@@ -40,7 +40,7 @@ class ChargeQuantifier:
     def __init__(self,
                  stats_csv: str,
                  charge_count: str = 'count',
-                 RPM_count: str = 'UMIcount',
+                 RPM_count: str = 'count',
                  excl_align_gap: bool = False,
                  excl_09_fmax: bool = False):
         """
@@ -58,10 +58,11 @@ class ChargeQuantifier:
             ValueError: If charge_count or RPM_count are invalid
         """
         # Validate count column inputs
-        if charge_count not in ['count', 'UMIcount']:
-            raise ValueError('"charge_count" must be either "count" or "UMIcount"')
-        if RPM_count not in ['count', 'UMIcount']:
-            raise ValueError('"RPM_count" must be either "count" or "UMIcount"')
+        valid_count_cols = ['count', 'UMIcount']
+        if charge_count not in valid_count_cols:
+            raise ValueError(f'"charge_count" must be one of {valid_count_cols}')
+        if RPM_count not in valid_count_cols:
+            raise ValueError(f'"RPM_count" must be one of {valid_count_cols}')
 
         self.charge_count_col = charge_count
         self.RPM_count_col = RPM_count
@@ -81,15 +82,15 @@ class ChargeQuantifier:
             'tRNA_annotation_len': int,
             'unique_annotation': bool,
             '5p_cover': bool,
-            '3p_cover': bool,
-            'align_3p_nts': str,  # Preferred column name
-            'align_3p_nt': str,   # Alternative column name
+            'align_3p_nts': str,  # Preferred column name (2-char dinucleotide)
+            'align_3p_nt': str,   # Legacy column name (single char)
             'codon': str,
             'anticodon': str,
             'amino_acid': str,
-            'align_gap': bool,
-            'fmax_score>0.9': bool,
-            'UMIcount': int,
+            'align_gap': bool,     # Optional: only in full (non-aggregate) stats
+            'fmax_score>0.9': bool, # Optional: only in full (non-aggregate) stats
+            '3p_cover': bool,      # Optional: only in full (non-aggregate) stats
+            'UMIcount': int,       # Optional: only present with UMI data
             'count': int
         }
 
@@ -217,11 +218,30 @@ class ChargeQuantifier:
         # Filter rows based on exclusion criteria
         row_mask = (self.stats_df['count'] > 0)  # all True (dummy)
         if self.excl_align_gap:
+            if 'align_gap' not in self.stats_df.columns:
+                raise ValueError(
+                    "excl_align_gap=True requires 'align_gap' column in the data. "
+                    f"Available columns: {list(self.stats_df.columns)}")
             row_mask &= (~self.stats_df['align_gap'])
         if self.excl_09_fmax:
+            if 'fmax_score>0.9' not in self.stats_df.columns:
+                raise ValueError(
+                    "excl_09_fmax=True requires 'fmax_score>0.9' column in the data. "
+                    f"Available columns: {list(self.stats_df.columns)}")
             row_mask &= (self.stats_df['fmax_score>0.9'])
 
         charge_df = self.stats_df.loc[row_mask].copy()
+
+        # Determine which count columns are available
+        count_cols = [c for c in ['count', 'UMIcount'] if c in charge_df.columns]
+        if self.charge_count_col not in charge_df.columns:
+            raise ValueError(
+                f"charge_count column '{self.charge_count_col}' not found in data. "
+                f"Available count columns: {count_cols}")
+        if self.RPM_count_col not in charge_df.columns:
+            raise ValueError(
+                f"RPM_count column '{self.RPM_count_col}' not found in data. "
+                f"Available count columns: {count_cols}")
 
         # Define columns to use for grouping
         stats_agg_cols = [
@@ -229,21 +249,20 @@ class ChargeQuantifier:
             'tRNA_annotation', 'tRNA_anno_short', 'tRNA_annotation_len', 'unique_annotation',
             '5p_cover', '3p_cover', 'align_3p_nts', 'codon', 'anticodon', 'amino_acid',
             'AA_letter', 'AA_codon', 'single_codon', 'single_aa', 'mito_codon', 'Syn_ctr',
-            'count', 'UMIcount'
-        ]
+        ] + count_cols
 
         # Filter to only include existing columns
         stats_agg_cols = [col for col in stats_agg_cols if col in charge_df.columns]
 
-        # Rearrange columns so count and UMIcount are last
-        other_cols = [col for col in stats_agg_cols if col not in ['count', 'UMIcount']]
-        charge_df = charge_df[other_cols + ['count', 'UMIcount']]
+        # Rearrange columns so count columns are last
+        other_cols = [col for col in stats_agg_cols if col not in count_cols]
+        charge_df = charge_df[other_cols + count_cols]
 
-        # Group by all columns except count and UMIcount
-        charge_df = charge_df.groupby(other_cols, as_index=False).agg({
-            'count': "sum",
-            'UMIcount': "sum"
-        }).reset_index(drop=True)
+        # Group by all columns except count columns
+        agg_dict = {c: "sum" for c in count_cols}
+        charge_df = charge_df.groupby(other_cols, as_index=False).agg(
+            agg_dict
+        ).reset_index(drop=True)
 
         # Count charge states based on 3' nucleotides
         charge_df['CA_count'] = charge_df.apply(
@@ -269,17 +288,15 @@ class ChargeQuantifier:
             charge_df_cols.remove('align_3p_nts')
         charge_df_cols.extend(['CA_count', 'CC_count', 'GA_count', 'CG_count'])
 
-        # Find the index where count/UMIcount aggregation columns start
-        groupby_cols = [col for col in charge_df_cols if col not in ['CA_count', 'CC_count', 'GA_count', 'CG_count', 'count', 'UMIcount']]
+        # Find the index where count aggregation columns start
+        non_agg_cols = count_cols + ['CA_count', 'CC_count', 'GA_count', 'CG_count']
+        groupby_cols = [col for col in charge_df_cols if col not in non_agg_cols]
 
-        charge_df = charge_df.groupby(groupby_cols, as_index=False).agg({
-            'count': "sum",
-            'UMIcount': "sum",
-            'CA_count': "sum",
-            'CC_count': "sum",
-            'GA_count': "sum",
-            'CG_count': "sum"
-        }).reset_index(drop=True)
+        agg_dict2 = {c: "sum" for c in count_cols}
+        agg_dict2.update({'CA_count': "sum", 'CC_count': "sum", 'GA_count': "sum", 'CG_count': "sum"})
+        charge_df = charge_df.groupby(groupby_cols, as_index=False).agg(
+            agg_dict2
+        ).reset_index(drop=True)
 
         # Calculate charge percentages with safe division
         charge_df['charge_canonical'] = charge_df.apply(
@@ -316,33 +333,36 @@ class ChargeQuantifier:
 
     def _create_filtered_charge_dfs(self):
         """Create filtered charge dataframes by amino acid, codon, and transcript."""
+        # Build dynamic agg dict based on available count columns
+        count_cols = [c for c in ['count', 'UMIcount'] if c in self.charge_df.columns]
+        base_agg = {c: "sum" for c in count_cols}
+        base_agg.update({
+            'CA_count': "sum", 'CC_count': "sum",
+            'GA_count': "sum", 'CG_count': "sum",
+            'RPM': "sum"
+        })
+
+        def _recalc_charge(df):
+            """Recalculate charge percentages after aggregation."""
+            df['charge_canonical'] = df.apply(
+                lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'])
+                if (row['CA_count'] + row['CC_count']) > 0 else np.nan,
+                axis=1
+            )
+            df['charge_non-canonical'] = df.apply(
+                lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'])
+                if (row['GA_count'] + row['CG_count']) > 0 else np.nan,
+                axis=1
+            )
+            return df
+
         # Filter by amino acid
         aa_mask = self.charge_df['single_aa']
         charge_df_aa = self.charge_df[aa_mask].groupby([
             'sample_name_unique', 'sample_name', 'replicate', 'barcode',
             'amino_acid', 'AA_letter', 'mito_codon', 'Syn_ctr'
-        ], as_index=False).agg({
-            'count': "sum",
-            'UMIcount': "sum",
-            'CA_count': "sum",
-            'CC_count': "sum",
-            'GA_count': "sum",
-            'CG_count': "sum",
-            'RPM': "sum"
-        }).reset_index(drop=True)
-
-        # Recalculate charge for aggregated data
-        charge_df_aa['charge_canonical'] = charge_df_aa.apply(
-            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'])
-            if (row['CA_count'] + row['CC_count']) > 0 else np.nan,
-            axis=1
-        )
-        charge_df_aa['charge_non-canonical'] = charge_df_aa.apply(
-            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'])
-            if (row['GA_count'] + row['CG_count']) > 0 else np.nan,
-            axis=1
-        )
-        self.charge_filt['aa'] = charge_df_aa
+        ], as_index=False).agg(base_agg).reset_index(drop=True)
+        self.charge_filt['aa'] = _recalc_charge(charge_df_aa)
 
         # Filter by codon
         cd_mask = self.charge_df['single_codon']
@@ -350,27 +370,8 @@ class ChargeQuantifier:
             'sample_name_unique', 'sample_name', 'replicate', 'barcode',
             'codon', 'anticodon', 'AA_codon', 'amino_acid', 'AA_letter',
             'mito_codon', 'Syn_ctr'
-        ], as_index=False).agg({
-            'count': "sum",
-            'UMIcount': "sum",
-            'CA_count': "sum",
-            'CC_count': "sum",
-            'GA_count': "sum",
-            'CG_count': "sum",
-            'RPM': "sum"
-        }).reset_index(drop=True)
-
-        charge_df_cd['charge_canonical'] = charge_df_cd.apply(
-            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'])
-            if (row['CA_count'] + row['CC_count']) > 0 else np.nan,
-            axis=1
-        )
-        charge_df_cd['charge_non-canonical'] = charge_df_cd.apply(
-            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'])
-            if (row['GA_count'] + row['CG_count']) > 0 else np.nan,
-            axis=1
-        )
-        self.charge_filt['codon'] = charge_df_cd
+        ], as_index=False).agg(base_agg).reset_index(drop=True)
+        self.charge_filt['codon'] = _recalc_charge(charge_df_cd)
 
         # Filter by transcript
         tr_mask = self.charge_df['unique_annotation']
@@ -379,27 +380,8 @@ class ChargeQuantifier:
             'tRNA_annotation', 'tRNA_anno_short', 'tRNA_annotation_len',
             'codon', 'anticodon', 'AA_codon', 'amino_acid', 'AA_letter',
             'mito_codon', 'Syn_ctr'
-        ], as_index=False).agg({
-            'count': "sum",
-            'UMIcount': "sum",
-            'CA_count': "sum",
-            'CC_count': "sum",
-            'GA_count': "sum",
-            'CG_count': "sum",
-            'RPM': "sum"
-        }).reset_index(drop=True)
-
-        charge_df_tr['charge_canonical'] = charge_df_tr.apply(
-            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'])
-            if (row['CA_count'] + row['CC_count']) > 0 else np.nan,
-            axis=1
-        )
-        charge_df_tr['charge_non-canonical'] = charge_df_tr.apply(
-            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'])
-            if (row['GA_count'] + row['CG_count']) > 0 else np.nan,
-            axis=1
-        )
-        self.charge_filt['tr'] = charge_df_tr
+        ], as_index=False).agg(base_agg).reset_index(drop=True)
+        self.charge_filt['tr'] = _recalc_charge(charge_df_tr)
 
     def quantify_all(self,
                      level: str = 'transcript',

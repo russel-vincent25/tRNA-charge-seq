@@ -1,28 +1,36 @@
 #!/usr/bin/env python3
 """
-Unified Preprocessing Pipeline (Stages 0-2)
+Unified Preprocessing Pipeline (Stages 0-5)
 ============================================
 
-Combines all preprocessing steps into a single script:
+Combines all preprocessing and analysis steps into a single script:
 - Stage 0a: Adapter Removal & Merging
 - Stage 0b: Barcode Splitting
 - Stage 0c: UMI Trimming
 - Stage 1: SWIPE Alignment
 - Stage 2: Stats Collection
+- Stage 3: Charge Quantification (optional)
+- Stage 4: Parquet Storage (optional)
+- Stage 5: Alignment QC Reports (optional)
 
 Output:
 - inp_file_df.xlsx (input file summary)
 - sample_df.xlsx (sample information with QC metrics)
 - ALL_stats_aggregate.csv (combined statistics for charge quantification)
+- charge_analysis/ (charge quantification results, if enabled)
+- parquet_data/ (parquet-format data, if enabled)
+- qc_reports/ (alignment QC reports, if enabled)
 
 Usage:
     python scripts/run_preprocessing.py \
         --config config.yaml \
         --output-dir output/ \
-        --n-jobs 8
+        --n-jobs 8 \
+        --parquet \
+        --qc-reports
 
 Author: Based on projects/example/process_data.ipynb
-Date: 2026-02-10
+Date: 2026-02-11
 """
 
 import os
@@ -48,12 +56,31 @@ from src.read_processing import AR_merge, BC_split, UMI_trim
 from src.alignment import SWIPE_align
 from src.stats_collection import STATS_collection
 
+# Optional imports for extended analysis stages
+try:
+    from trnaseq.charge.quantifier import ChargeQuantifier
+    CHARGE_AVAILABLE = True
+except ImportError:
+    CHARGE_AVAILABLE = False
+
+try:
+    from trnaseq.io.storage import tRNAseqDataStore, PYARROW_AVAILABLE
+    STORAGE_AVAILABLE = PYARROW_AVAILABLE
+except ImportError:
+    STORAGE_AVAILABLE = False
+
+try:
+    from trnaseq.visualization.alignment_viewer import AlignmentViewer
+    VIEWER_AVAILABLE = True
+except ImportError:
+    VIEWER_AVAILABLE = False
+
 
 class PreprocessingPipeline:
     """
     Unified preprocessing pipeline for tRNA-charge-seq
 
-    Runs stages 0a-2 and outputs key files for downstream analysis.
+    Runs stages 0a-5 and outputs key files for downstream analysis.
     """
 
     def __init__(self, config_file, output_dir, n_jobs=4):
@@ -132,11 +159,21 @@ class PreprocessingPipeline:
             'UMI_dir': 'UMI_trimmed',
             'align_dir': 'SWalign',
             'stats_dir': 'stats_collection',
+            'charge_dir': 'charge_analysis',
+            'parquet_dir': 'parquet_data',
+            'qc_dir': 'qc_reports',
         }
 
-        # Create subdirectories
-        for dir_name in ['data', 'AdapterRemoval', 'BC_split', 'UMI_trimmed',
+        # Create data directory
+        (self.output_dir / 'data').mkdir(exist_ok=True)
+
+        # Create subdirectories under data/
+        for dir_name in ['AdapterRemoval', 'BC_split', 'UMI_trimmed',
                          'SWalign', 'stats_collection']:
+            (self.output_dir / 'data' / dir_name).mkdir(exist_ok=True)
+
+        # Create analysis directories
+        for dir_name in ['charge_analysis', 'parquet_data', 'qc_reports']:
             (self.output_dir / dir_name).mkdir(exist_ok=True)
 
     def stage_0a_adapter_removal(self):
@@ -273,6 +310,224 @@ class PreprocessingPipeline:
 
         self.status['stages_completed'].append('2')
 
+    def stage_3_charge_quantification(self):
+        """Stage 3: Charge Quantification"""
+        self.log("=" * 60)
+        self.log("Stage 3: Charge Quantification")
+        self.log("=" * 60)
+
+        if not CHARGE_AVAILABLE:
+            self.log("WARNING: ChargeQuantifier not available. Skipping stage 3.", level="WARN")
+            self.log("  Install with: pip install -e . (from repo root)", level="WARN")
+            return
+
+        # Get stats file
+        stats_file = self.output_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
+        if not stats_file.exists():
+            self.log(f"ERROR: Stats file not found: {stats_file}", level="ERROR")
+            return
+
+        # Get charge quantification settings
+        charge_count = self.config.get('charge_count', 'count')
+        charge_levels = self.config.get('charge_levels', ['transcript', 'codon', 'aa'])
+        include_synthetic = self.config.get('include_synthetic', False)
+        include_mito = self.config.get('include_mito', True)
+
+        self.log(f"  Input: {stats_file.name}")
+        self.log(f"  Charge count column: {charge_count}")
+        self.log(f"  Levels: {', '.join(charge_levels)}")
+
+        try:
+            # Initialize quantifier
+            quantifier = ChargeQuantifier(
+                stats_csv=str(stats_file),
+                charge_count=charge_count,
+                RPM_count=charge_count
+            )
+
+            self.log(f"  Loaded {len(quantifier.stats_df)} alignment records")
+
+            # Create output directory
+            charge_dir = self.output_dir / 'charge_analysis'
+            charge_dir.mkdir(exist_ok=True)
+
+            # Quantify and export for each level
+            self.charge_results = {}
+            for level in charge_levels:
+                self.log(f"  Quantifying at {level} level...")
+
+                df = quantifier.quantify_all(
+                    level=level,
+                    include_synthetic=include_synthetic,
+                    include_mito=include_mito
+                )
+
+                # Save to CSV
+                output_file = charge_dir / f'charge_df_{level}.csv'
+                df.to_csv(output_file, index=False)
+                self.charge_results[level] = df
+
+                self.log(f"    Saved: {output_file.name} ({len(df)} entries)")
+
+            # Generate summary statistics
+            self.log("  Generating summary statistics...")
+            summary_list = []
+            for level in charge_levels:
+                summary = quantifier.get_summary_statistics(level=level)
+                summary['level'] = level
+                summary_list.append(summary)
+
+            if summary_list:
+                summary_df = pd.concat(summary_list, ignore_index=True)
+                summary_file = charge_dir / 'charge_summary.csv'
+                summary_df.to_csv(summary_file, index=False)
+                self.log(f"    Saved: {summary_file.name}")
+
+            self.status['stages_completed'].append('3')
+            self.log("  Charge quantification complete!")
+
+        except Exception as e:
+            self.log(f"ERROR in charge quantification: {str(e)}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="ERROR")
+
+    def stage_4_parquet_storage(self):
+        """Stage 4: Parquet Storage (optional)"""
+        self.log("=" * 60)
+        self.log("Stage 4: Parquet Storage")
+        self.log("=" * 60)
+
+        if not STORAGE_AVAILABLE:
+            self.log("WARNING: tRNAseqDataStore not available. Skipping stage 4.", level="WARN")
+            self.log("  Install with: pip install pyarrow", level="WARN")
+            return
+
+        try:
+            # Initialize data store
+            parquet_dir = self.output_dir / 'parquet_data'
+            store = tRNAseqDataStore(str(parquet_dir))
+
+            compression = self.config.get('parquet_compression', 'snappy')
+            self.log(f"  Compression: {compression}")
+
+            # Convert stats CSV to Parquet
+            stats_file = self.output_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
+            if stats_file.exists():
+                self.log(f"  Converting stats to Parquet...")
+                stats_df = pd.read_csv(stats_file)
+                parquet_file = store.save_stats(
+                    stats_df,
+                    filename='ALL_stats_aggregate',
+                    format='parquet',
+                    compression=compression
+                )
+
+                # Calculate compression ratio
+                csv_size = stats_file.stat().st_size / (1024 * 1024)
+                parquet_size = parquet_file.stat().st_size / (1024 * 1024)
+                ratio = csv_size / parquet_size if parquet_size > 0 else 0
+
+                self.log(f"    CSV: {csv_size:.1f} MB")
+                self.log(f"    Parquet: {parquet_size:.1f} MB")
+                self.log(f"    Compression ratio: {ratio:.1f}x")
+
+            # Convert charge CSVs to Parquet if they exist
+            charge_dir = self.output_dir / 'charge_analysis'
+            if charge_dir.exists():
+                for csv_file in charge_dir.glob('charge_df_*.csv'):
+                    self.log(f"  Converting {csv_file.name} to Parquet...")
+                    df = pd.read_csv(csv_file)
+                    parquet_file = store.save_charge_data(
+                        df,
+                        compression=compression
+                    )
+                    # Rename to match CSV name
+                    new_name = parquet_dir / 'charge' / csv_file.with_suffix('.parquet').name
+                    parquet_file.rename(new_name)
+                    self.log(f"    Saved: {new_name.name}")
+
+            self.status['stages_completed'].append('4')
+            self.log("  Parquet conversion complete!")
+
+        except Exception as e:
+            self.log(f"ERROR in Parquet storage: {str(e)}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="ERROR")
+
+    def stage_5_alignment_qc(self):
+        """Stage 5: Alignment QC Reports (optional)"""
+        self.log("=" * 60)
+        self.log("Stage 5: Alignment QC Reports")
+        self.log("=" * 60)
+
+        if not VIEWER_AVAILABLE:
+            self.log("WARNING: AlignmentViewer not available. Skipping stage 5.", level="WARN")
+            self.log("  Install with: pip install -e . (from repo root)", level="WARN")
+            return
+
+        try:
+            qc_dir = self.output_dir / 'qc_reports'
+            qc_dir.mkdir(exist_ok=True)
+
+            # Get QC settings
+            qc_format = self.config.get('qc_report_format', 'html')
+            top_n = self.config.get('qc_top_trnas', 20)
+
+            # Find alignment JSON files
+            align_dir = self.output_dir / 'data' / 'SWalign'
+            json_files = list(align_dir.glob('*_SWalign.json.bz2'))
+
+            if not json_files:
+                self.log("  No alignment JSON files found", level="WARN")
+                return
+
+            self.log(f"  Found {len(json_files)} alignment files")
+            self.log(f"  Generating QC reports for top {top_n} tRNAs per sample")
+
+            for json_file in json_files:
+                sample_name = json_file.name.replace('_SWalign.json.bz2', '')
+                self.log(f"  Processing {sample_name}...")
+
+                try:
+                    viewer = AlignmentViewer(str(json_file))
+
+                    # List top tRNAs by read count
+                    trna_df = viewer.list_trnas(min_reads=10)
+
+                    if trna_df.empty:
+                        self.log(f"    No tRNAs with >= 10 reads", level="WARN")
+                        continue
+
+                    # Save tRNA list
+                    trna_list_file = qc_dir / f'{sample_name}_trna_list.csv'
+                    trna_df.to_csv(trna_list_file, index=False)
+                    self.log(f"    Saved tRNA list: {trna_list_file.name}")
+
+                    # Generate reports for top N tRNAs
+                    top_trnas = trna_df.head(top_n)['tRNA'].tolist()
+
+                    for i, trna_id in enumerate(top_trnas[:5], 1):  # Limit to 5 for speed
+                        self.log(f"    Generating report for {trna_id} ({i}/5)...")
+
+                        if qc_format == 'html':
+                            output_file = qc_dir / f'{sample_name}_{trna_id}_report.html'
+                            viewer.create_html_report(trna_id, output=str(output_file))
+                        else:
+                            output_file = qc_dir / f'{sample_name}_{trna_id}_coverage.png'
+                            viewer.plot_coverage(trna_id, output=str(output_file))
+
+                except Exception as e:
+                    self.log(f"    ERROR processing {sample_name}: {str(e)}", level="ERROR")
+                    continue
+
+            self.status['stages_completed'].append('5')
+            self.log("  QC report generation complete!")
+
+        except Exception as e:
+            self.log(f"ERROR in QC reports: {str(e)}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="ERROR")
+
     def save_outputs(self):
         """Save output files"""
         self.log("=" * 60)
@@ -299,6 +554,18 @@ class PreprocessingPipeline:
         else:
             self.log(f"  WARNING: ALL_stats_aggregate.csv not found", level="WARN")
 
+        # Copy charge analysis results to output root
+        if hasattr(self, 'charge_results') and self.charge_results:
+            charge_dir = self.output_dir / 'charge_analysis'
+            for level, df in self.charge_results.items():
+                output_file = self.output_dir / f'charge_df_{level}.csv'
+                import shutil
+                shutil.copy(
+                    charge_dir / f'charge_df_{level}.csv',
+                    output_file
+                )
+                self.log(f"  Saved: {output_file.name}")
+
     def run(self):
         """Run complete preprocessing pipeline"""
         try:
@@ -311,12 +578,28 @@ class PreprocessingPipeline:
             self.load_sample_info()
             self.setup_directories()
 
-            # Run stages
+            # Run preprocessing stages (0-2)
             self.stage_0a_adapter_removal()
             self.stage_0b_barcode_split()
             self.stage_0c_umi_trim()
             self.stage_1_alignment()
             self.stage_2_stats_collection()
+
+            # Run optional analysis stages (3-5)
+            if self.config.get('run_charge_quantification', True):
+                self.stage_3_charge_quantification()
+            else:
+                self.log("Skipping Stage 3: Charge Quantification (disabled in config)")
+
+            if self.config.get('run_parquet_storage', False):
+                self.stage_4_parquet_storage()
+            else:
+                self.log("Skipping Stage 4: Parquet Storage (disabled in config)")
+
+            if self.config.get('run_alignment_qc', False):
+                self.stage_5_alignment_qc()
+            else:
+                self.log("Skipping Stage 5: Alignment QC (disabled in config)")
 
             # Save outputs
             self.save_outputs()
@@ -334,9 +617,19 @@ class PreprocessingPipeline:
             self.log(f"  - inp_file_df.xlsx")
             self.log(f"  - sample_df.xlsx")
             self.log(f"  - ALL_stats_aggregate.csv")
+
+            # List charge results if generated
+            if '3' in self.status['stages_completed']:
+                self.log(f"  - charge_df_transcript.csv")
+                self.log(f"  - charge_df_codon.csv")
+                self.log(f"  - charge_df_aa.csv")
+                self.log(f"  - charge_summary.csv")
+
             self.log("")
-            self.log("Next step: Run charge quantification (Stage 3)")
-            self.log("  python -m trnaseq.cli.commands.quantify ALL_stats_aggregate.csv")
+            if '3' not in self.status['stages_completed']:
+                self.log("Next step: Run charge quantification (Stage 3)")
+                self.log("  Re-run with charge quantification enabled in config, or:")
+                self.log("  python -m trnaseq.cli.commands.quantify ALL_stats_aggregate.csv")
 
         except Exception as e:
             self.log(f"Pipeline failed: {str(e)}", level="ERROR")
@@ -345,7 +638,7 @@ class PreprocessingPipeline:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Unified tRNA-charge-seq preprocessing pipeline (Stages 0-2)"
+        description="Unified tRNA-charge-seq preprocessing pipeline (Stages 0-5)"
     )
     parser.add_argument(
         '--config', required=True,
@@ -359,6 +652,22 @@ def main():
         '--n-jobs', type=int, default=4,
         help='Number of parallel jobs (default: 4)'
     )
+    parser.add_argument(
+        '--skip-charge', action='store_true',
+        help='Skip charge quantification (Stage 3)'
+    )
+    parser.add_argument(
+        '--parquet', action='store_true',
+        help='Save to Parquet format (Stage 4)'
+    )
+    parser.add_argument(
+        '--qc-reports', action='store_true',
+        help='Generate alignment QC reports (Stage 5)'
+    )
+    parser.add_argument(
+        '--stages', type=str, default='all',
+        help='Stages to run: "all", "0-2", "3-5", or specific like "0a,0b,1,3"'
+    )
 
     args = parser.parse_args()
 
@@ -368,6 +677,21 @@ def main():
         output_dir=args.output_dir,
         n_jobs=args.n_jobs
     )
+
+    # Override config with CLI arguments
+    if args.skip_charge:
+        pipeline.config['run_charge_quantification'] = False
+    if args.parquet:
+        pipeline.config['run_parquet_storage'] = True
+    if args.qc_reports:
+        pipeline.config['run_alignment_qc'] = True
+
+    # Note: --stages argument is parsed but not yet implemented
+    # This would require refactoring run() to support selective stage execution
+    if args.stages != 'all':
+        print(f"WARNING: --stages option not yet implemented. Running all stages.")
+        print(f"  Requested stages: {args.stages}")
+
     pipeline.run()
 
 

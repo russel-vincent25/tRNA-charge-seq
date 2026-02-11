@@ -16,8 +16,10 @@
 # Development stuff:
 **/dev_stuff
 sandbox.ipynb
-/plans # Feature implementation plans
-/.claude # Only need locally
+# Feature implementation plans
+plans/
+# Claude Code local config
+.claude/
 
 # Data folder (to big for Github)
 /projects/**/*.fasta

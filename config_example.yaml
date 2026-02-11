@@ -50,6 +50,31 @@ overwrite: true  # Overwrite existing output directories
 # Example:
 # species: "human"  # or "mouse", "ecoli", etc.
 
+# Analysis Stages (optional)
+# --------------------------
+run_charge_quantification: true   # Stage 3: Charge analysis
+run_parquet_storage: false        # Stage 4: Convert to Parquet
+run_alignment_qc: false           # Stage 5: QC reports
+
+# Charge Quantification Settings (Stage 3)
+# -----------------------------------------
+charge_count: "count"             # Use "count" or "UMIcount" for charge calculation
+charge_levels:                    # Annotation levels to quantify
+  - transcript
+  - codon
+  - aa
+include_synthetic: false          # Include synthetic control tRNAs in charge results
+include_mito: true                # Include mitochondrial tRNAs in charge results
+
+# Parquet Storage Settings (Stage 4)
+# -----------------------------------
+parquet_compression: "snappy"     # Compression: snappy (fast), gzip (balanced), or brotli (best)
+
+# QC Report Settings (Stage 5)
+# -----------------------------
+qc_report_format: "html"         # Output format: html or png
+qc_top_trnas: 20                 # Number of top tRNAs to analyze per sample
+
 # Notes
 # -----
 # - All paths are relative to the repository root
@@ -57,3 +82,4 @@ overwrite: true  # Overwrite existing output directories
 # - Sample list should have columns: sample_name_unique, sample_name, replicate,
 #   fastq_mate1_filename, fastq_mate2_filename, P5_index, P7_index, barcode, species
 # - Index list should define barcode_seq, P5_index_seq, P7_index_seq for each barcode/index
+# - Stages 3-5 are optional and can be enabled/disabled via config or CLI arguments
