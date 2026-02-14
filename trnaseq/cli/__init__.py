@@ -44,6 +44,11 @@ def main(argv=None):
         '--sample-index', type=int, default=None,
         help='Process only sample at this 0-based index (for SLURM array jobs)'
     )
+    pipeline_parser.add_argument(
+        '--threads-per-job', type=int, default=None,
+        help='Threads per subprocess (AdapterRemoval/SWIPE). '
+             'Default: config threads_per_job or 2'
+    )
 
     # --- quantify subcommand ---
     from trnaseq.cli.commands.quantify import add_quantify_parser
@@ -85,6 +90,7 @@ def _run_pipeline(args, parser):
         project_dir=project_dir,
         n_jobs=args.n_jobs,
         sample_index=getattr(args, 'sample_index', None),
+        threads_per_job=getattr(args, 'threads_per_job', None),
     )
 
     if args.skip_charge:
