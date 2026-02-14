@@ -179,17 +179,27 @@ Paths can be absolute or relative to `--project-dir`.
 
 For large datasets on HMS O2 or similar clusters. The pipeline supports per-sample parallelization via SLURM array jobs.
 
-```bash
-# Automatic (chains 3 jobs with dependencies)
-bash hpc/slurm/submit_pipeline.sh config.yaml /path/to/project/ 72 32
+Set your project directory (must contain `data/raw_fastq/`, config, and sample list):
 
-# Or submit manually
-sbatch hpc/slurm/stage0ab.job config.yaml /path/to/project/
-sbatch --dependency=afterok:<JOB0> --array=0-71%32 hpc/slurm/stage0c_1.job config.yaml /path/to/project/
-sbatch --dependency=afterok:<JOB1> hpc/slurm/stage2_5.job config.yaml /path/to/project/
+```bash
+export PROJECT_DIR="/n/scratch/users/r/$USER/my_project"
 ```
 
-See [`hpc/slurm/QUICK_START.md`](hpc/slurm/QUICK_START.md) for full documentation.
+Submit the pipeline from the **login node**:
+
+```bash
+# Automatic (chains 3 jobs with dependencies)
+bash hpc/slurm/submit_pipeline.sh $PROJECT_DIR/config.yaml $PROJECT_DIR 72 32
+
+# Or submit manually with sbatch
+REPO="/home/$USER/github_repos/tRNA-charge-seq"
+
+JOB0=$(sbatch --parsable $REPO/hpc/slurm/stage0ab.job $PROJECT_DIR/config.yaml $PROJECT_DIR)
+JOB1=$(sbatch --parsable --dependency=afterok:$JOB0 --array=0-71%32 $REPO/hpc/slurm/stage0c_1.job $PROJECT_DIR/config.yaml $PROJECT_DIR)
+JOB2=$(sbatch --parsable --dependency=afterok:$JOB1 $REPO/hpc/slurm/stage2_5.job $PROJECT_DIR/config.yaml $PROJECT_DIR)
+```
+
+See [`hpc/slurm/QUICK_START.md`](hpc/slurm/QUICK_START.md) for full setup and deployment guide.
 
 ## Input Data
 

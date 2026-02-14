@@ -57,8 +57,10 @@ dependencies:
   - tqdm                        # Progress bars
   - pytest                      # Testing framework
 
-pip:
-  - pydeseq2>=0.4               # Differential abundance analysis (optional)
+  # Pip packages (must be indented under dependencies)
+  - pip                         # Include pip itself
+  - pip:
+    - pydeseq2>=0.4             # Differential abundance analysis (optional)
 
 # Installation instructions:
 #
@@ -82,4 +84,3 @@ pip:
 # - scipy <1.15.0 required for seaborn compatibility
 # - numpy <1.26.0 and pandas <2.2.0 required for Excel file support
 # - All bioinformatics tools verified working with these versions
-# - See .claude/agent_sessions/notebook_beta_test_2026-02-11/issues_found.md for details
