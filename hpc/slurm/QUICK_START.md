@@ -137,11 +137,16 @@ JOB2: stage2_5.job        (single job)
   Stages 2 + 3 + 5: Stats + Charge + QC report
 ```
 
-| File | Type | Resources | Time |
-|------|------|-----------|------|
+| File | Type | Default Resources | Time |
+|------|------|-------------------|------|
 | `stage0ab.job` | Single job | 4 CPU, 16G | 1 hr |
 | `stage0c_1.job` | Array job | 4 CPU, 8G per task | 45 min |
 | `stage2_5.job` | Single job | 16 CPU, 64G | 2 hr |
+
+**Thread awareness:** The pipeline uses `--threads-per-job` to control how many
+threads each AdapterRemoval or SWIPE subprocess uses. Stage 0ab computes
+`n_jobs = CPUs / threads_per_job`; stage 0c+1 gives all CPUs to a single SWIPE
+process. The launcher auto-sizes all resources based on sample count.
 
 Job logs go to `/home/$USER/jobOutput/tseq-*.out` and `*.err`.
 Email notifications (BEGIN, END, FAIL) are sent for each job.
@@ -175,23 +180,32 @@ bash hpc/slurm/submit_pipeline.sh "$PROJECT_DIR/config.yaml" "$PROJECT_DIR" 72 3
 
 ### Option B: Manual submission
 
-Submit each `.job` file yourself with `sbatch`:
+Submit each `.job` file yourself with `sbatch`. Pass resource overrides and
+`threads_per_job` (3rd arg to stage0ab.job, default 2):
 
 ```bash
 REPO="/home/$USER/github_repos/tRNA-charge-seq"
 CONFIG="$PROJECT_DIR/config.yaml"
 N=71  # Number of samples minus 1 (0-indexed)
 
-# Job 0: Merge + BC split
-JOB0=$(sbatch --parsable "$REPO/hpc/slurm/stage0ab.job" "$CONFIG" "$PROJECT_DIR")
+# Job 0: Merge + BC split (8 jobs × 2 threads = 16 CPUs)
+JOB0=$(sbatch --parsable \
+    --cpus-per-task=16 --mem=32G -t 01:00:00 \
+    "$REPO/hpc/slurm/stage0ab.job" "$CONFIG" "$PROJECT_DIR" 2)
 echo "JOB0: $JOB0"
 
-# Job 1: Per-sample UMI + alignment (array)
-JOB1=$(sbatch --parsable --dependency=afterok:${JOB0} --array=0-${N}%32 "$REPO/hpc/slurm/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
+# Job 1: Per-sample UMI + alignment (1 job × 4 SWIPE threads per task)
+JOB1=$(sbatch --parsable \
+    --dependency=afterok:${JOB0} --array=0-${N}%32 \
+    --cpus-per-task=4 --mem=8G -t 00:45:00 \
+    "$REPO/hpc/slurm/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
 echo "JOB1: $JOB1"
 
 # Job 2: Stats + charge + QC
-JOB2=$(sbatch --parsable --dependency=afterok:${JOB1} "$REPO/hpc/slurm/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
+JOB2=$(sbatch --parsable \
+    --dependency=afterok:${JOB1} \
+    --cpus-per-task=16 --mem=32G -t 02:00:00 \
+    "$REPO/hpc/slurm/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
 echo "JOB2: $JOB2"
 ```
 
@@ -262,7 +276,8 @@ sbatch $REPO/hpc/slurm/stage2_5.job "$CONFIG" "$PROJECT_DIR"
 
 ## 9. Resource Tuning
 
-Override `.job` defaults on the command line if needed:
+The launcher (`submit_pipeline.sh`) auto-computes CPUs, memory, and wall time
+from `N_SAMPLES`. For manual runs, override `.job` defaults on the command line:
 
 ```bash
 # More memory for alignment-heavy samples
@@ -273,7 +288,15 @@ sbatch -t 01:30:00 --array=0-71%32 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PRO
 
 # Fewer concurrent tasks (if admin requests)
 sbatch --array=0-71%16 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
+
+# More CPUs for stage 0ab (pass threads_per_job as 3rd arg)
+sbatch --cpus-per-task=16 $REPO/hpc/slurm/stage0ab.job "$CONFIG" "$PROJECT_DIR" 2
 ```
+
+**Thread tuning:** `threads_per_job` controls how many threads each AdapterRemoval
+or SWIPE subprocess uses. The pipeline computes `n_jobs = CPUs / threads_per_job`.
+Set via config YAML (`threads_per_job: 2`) or CLI (`--threads-per-job 2`).
+Default is 2.
 
 ---
 
@@ -286,6 +309,7 @@ sbatch --array=0-71%16 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
 | `ModuleNotFoundError: pydeseq2` | `pip install pydeseq2` |
 | Array task OOM killed | Resubmit with `--mem=16G` |
 | Array task timeout | Resubmit with `-t 01:30:00` |
+| Stage 0a timeout (CPU oversubscription) | Launcher now auto-sizes; or pass `threads_per_job` as 3rd arg to stage0ab.job |
 | `FileNotFoundError: sample_list` | Check sample list is in `$PROJECT_DIR` |
 | `FileNotFoundError: raw_fastq` | Check path: `ls $PROJECT_DIR/data/raw_fastq/` |
 | Stage 2 fails (no stats) | Check JOB1 logs — some array tasks may have failed |
