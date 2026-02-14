@@ -35,13 +35,7 @@ If the conda solver has issues, create manually:
 ```bash
 conda create -n tRNA-seq python=3.10 -y
 conda activate tRNA-seq
-conda install -c conda-forge -c bioconda \
-    numpy">=1.24,<1.26" pandas">=2.0,<2.2" scipy">=1.11,<1.15" \
-    matplotlib seaborn==0.13.0 plotly logomaker \
-    biopython openpyxl xlrd pyarrow pyyaml \
-    mpire jellyfish json_stream natsort tqdm \
-    adapterremoval swipe blast bzip2 pigz \
-    pillow wand imagemagick pytest -y
+conda install -c conda-forge -c bioconda numpy">=1.24,<1.26" pandas">=2.0,<2.2" scipy">=1.11,<1.15" matplotlib seaborn==0.13.0 plotly logomaker biopython openpyxl xlrd pyarrow pyyaml mpire jellyfish json_stream natsort tqdm adapterremoval swipe blast bzip2 pigz pillow wand imagemagick pytest -y
 pip install pydeseq2
 ```
 
@@ -176,10 +170,7 @@ bash hpc/slurm/submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_c
 Example:
 
 ```bash
-bash hpc/slurm/submit_pipeline.sh \
-    "$PROJECT_DIR/config.yaml" \
-    "$PROJECT_DIR" \
-    72 32
+bash hpc/slurm/submit_pipeline.sh "$PROJECT_DIR/config.yaml" "$PROJECT_DIR" 72 32
 ```
 
 ### Option B: Manual submission
@@ -196,16 +187,11 @@ JOB0=$(sbatch --parsable "$REPO/hpc/slurm/stage0ab.job" "$CONFIG" "$PROJECT_DIR"
 echo "JOB0: $JOB0"
 
 # Job 1: Per-sample UMI + alignment (array)
-JOB1=$(sbatch --parsable \
-    --dependency=afterok:${JOB0} \
-    --array=0-${N}%32 \
-    "$REPO/hpc/slurm/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
+JOB1=$(sbatch --parsable --dependency=afterok:${JOB0} --array=0-${N}%32 "$REPO/hpc/slurm/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
 echo "JOB1: $JOB1"
 
 # Job 2: Stats + charge + QC
-JOB2=$(sbatch --parsable \
-    --dependency=afterok:${JOB1} \
-    "$REPO/hpc/slurm/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
+JOB2=$(sbatch --parsable --dependency=afterok:${JOB1} "$REPO/hpc/slurm/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
 echo "JOB2: $JOB2"
 ```
 
@@ -266,8 +252,7 @@ If specific array tasks fail (e.g., tasks 5 and 12):
 
 ```bash
 # Re-run only failed samples
-sbatch --array=5,12 \
-    $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
+sbatch --array=5,12 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
 
 # Then re-run aggregation
 sbatch $REPO/hpc/slurm/stage2_5.job "$CONFIG" "$PROJECT_DIR"
