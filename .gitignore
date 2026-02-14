@@ -16,6 +16,7 @@
 # Development stuff:
 **/dev_stuff
 sandbox.ipynb
+
 # Feature implementation plans
 plans/
 # Claude Code local config
@@ -33,8 +34,6 @@ plans/
 utils/code-of-limited-use/sim_data/*
 /sim/**/data
 /sim/**/sim_data
-
-
 
 # In example folder only push the raw_fastq folder
 # and some plotting folder to the repo:

@@ -41,3 +41,26 @@ downsample_absolute: null
 # Processing Options
 # ------------------
 overwrite: true  # Overwrite existing output directories
+
+# Stage 3: Charge Quantification
+# --------------------------------
+run_charge_quantification: true
+charge_count: "count"        # Column for charge calculation ('count' or 'UMIcount')
+charge_levels:               # Annotation levels to quantify
+  - transcript
+  - codon
+  - aa
+include_synthetic: false     # Exclude synthetic controls from charge output
+include_mito: true           # Include mitochondrial tRNAs
+
+# Stage 4: Parquet Storage
+# -------------------------
+run_parquet_storage: true
+parquet_compression: "snappy"
+
+# Stage 5: QC Dashboard
+# ----------------------
+run_qc_report: true           # Generate QC_summary.csv + QC_report.html
+run_alignment_qc: false       # Run on-demand via AlignmentViewer standalone
+qc_report_format: "html"     # 'html' for interactive reports, 'png' for coverage plots
+qc_top_trnas: 5              # Number of top tRNAs per sample to generate reports for

@@ -1,260 +1,126 @@
-# Quick Start Guide - tRNA-seq Storage & Batch Processing
+# SLURM Pipeline Quick Start (HMS O2)
 
-## Installation
+## Prerequisites
 
-```bash
-# Install required Python package
-pip install pyarrow
+1. tRNA-charge-seq repo cloned to O2
+2. Conda environment `tRNA-seq` with all dependencies
+3. Config YAML pointing to correct paths on O2
 
-# Or with conda
-conda install pyarrow
-```
-
-## 5-Minute Setup
-
-### 1. Prepare Sample List
+## Usage
 
 ```bash
-# Create sample list (one sample per line)
-cat > sample_list.txt << 'EOF'
-sample001
-sample002
-sample003
-...
-sample256
-EOF
+# From the repo root:
+bash hpc/slurm/submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_concurrent]
 ```
 
-### 2. Update Script Paths
+### Arguments
 
-Edit `process_charge.sh`:
-```bash
-PROJECT_DIR="/path/to/tRNA-charge-seq"
-SAMPLE_FILE="${PROJECT_DIR}/sample_list.txt"
-```
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `config.yaml` | Yes | Pipeline config (paths resolved relative to project_dir) |
+| `project_dir` | Yes | Output directory for all pipeline results |
+| `n_samples` | No | Number of samples (auto-detected from sample_list.xlsx) |
+| `max_concurrent` | No | Max concurrent array tasks (default: 32) |
 
-### 3. Submit Job Array
+### Example (PJ39, 256 samples)
 
 ```bash
-cd /path/to/tRNA-charge-seq
-sbatch hpc/slurm/process_charge.sh
+bash hpc/slurm/submit_pipeline.sh \
+    /n/data/PJ39/config.yaml \
+    /n/data/PJ39/ \
+    256 \
+    32
 ```
 
-### 4. Monitor Progress
+## Job Architecture
+
+```
+JOB0: stage0ab.sh         (single job)
+  Stages 0a + 0b: Merge reads + BC split
+  Resources: 4 CPU, 16G, 1 hour
+      │
+      ▼
+JOB1: stage0c_1.sh        (array job, 0-N%32)
+  Stages 0c + 1: UMI trim + SWIPE alignment (per sample)
+  Resources: 4 CPU, 8G, 45 min per task
+      │
+      ▼
+JOB2: stage2_5.sh         (single job)
+  Stages 2 + 3 + 5: Stats + Charge + QC report
+  Resources: 16 CPU, 64G, 2 hours
+```
+
+The `%32` throttle means at most 32 samples run simultaneously.
+Adjust with the 4th argument if your admin prefers fewer concurrent jobs.
+
+## Estimated Runtime (256 samples)
+
+| Stage | Time | Notes |
+|-------|------|-------|
+| 0a+0b (JOB0) | ~35 min | Depends on number of input file pairs |
+| 0c+1 (JOB1) | ~45 min | Wall time per task; all run in parallel |
+| 2+3+5 (JOB2) | ~35 min | Sequential aggregation |
+| **Total** | **~2 hours** | vs ~10 hours monolithic |
+
+## Monitoring
 
 ```bash
 # Check job status
-squeue -j <JOB_ID>
+squeue -u $USER
 
-# Check files created
-watch -n 5 'ls -1 data/charge/charge_*.parquet | wc -l'
+# Detailed job info
+sacct -j <JOB0_ID>,<JOB1_ID>,<JOB2_ID> --format=JobID,State,Elapsed,MaxRSS
 
-# View logs
-tail -f logs/charge_0.log
+# Watch logs in real time
+tail -f /path/to/PJ39/logs/*.out
+
+# Check for failed array tasks
+sacct -j <JOB1_ID> --format=JobID,State,ExitCode | grep -v COMPLETED
 ```
 
-## Python Usage
+## Re-running Failed Tasks
 
-### Basic Storage Operations
-
-```python
-from trnaseq.io import tRNAseqDataStore
-
-# Initialize storage
-store = tRNAseqDataStore('project_data/')
-
-# Save stats (automatically Parquet compressed)
-store.save_stats(stats_df, compression='snappy')
-
-# Load all stats
-all_stats = store.load_stats()
-
-# Load specific samples
-sample_stats = store.load_stats(samples=['sample001', 'sample002'])
-
-# Load specific tRNAs
-trna_stats = store.load_stats(trnas=['Ala-AGC', 'Gly-GCC'])
-
-# Load specific columns (memory efficient)
-subset = store.load_stats(columns=['sample_name', 'count', 'tRNA_annotation'])
-```
-
-### Batch Processing
-
-```python
-from trnaseq.io import BatchProcessor
-
-# Setup processor
-processor = BatchProcessor(store, num_workers=8)
-
-# Define processing function
-def process_sample(sample_id):
-    stats = store.load_stats(samples=[sample_id])
-    charge = calculate_charge(stats)
-    return charge
-
-# Process all samples
-results = processor.process_batch(
-    samples=['s001', 's002', 's003', ...],
-    func=process_sample,
-    output_type='charge'
-)
-```
-
-### Charge Data Operations
-
-```python
-# Save individual sample results
-store.save_charge_data(charge_df, sample_id='sample001')
-
-# Load all aggregated charge data
-all_charge = store.load_charge_data()
-
-# Load specific samples
-multi_charge = store.load_charge_data(
-    samples=['sample001', 'sample002']
-)
-
-# Load with column filtering
-subset_charge = store.load_charge_data(
-    samples=['sample001'],
-    columns=['tRNA_annotation', 'charge_fraction']
-)
-```
-
-## Performance Tips
-
-### For CSV to Parquet Conversion
+If some array tasks fail (e.g., task 42 and 107):
 
 ```bash
-# Option 1: Python API
-python << 'EOF'
-from trnaseq.io import tRNAseqDataStore
+# Re-run specific samples only
+sbatch --array=42,107 hpc/slurm/stage0c_1.sh config.yaml /path/to/PJ39/
 
-store = tRNAseqDataStore('data/')
-store.convert_csv_to_parquet('old_stats.csv', output_name='stats')
-EOF
-
-# Option 2: Batch conversion
-for csv_file in data/stats/*.csv; do
-    python << EOF
-from trnaseq.io import tRNAseqDataStore
-store = tRNAseqDataStore('data/')
-store.convert_csv_to_parquet('$csv_file')
-EOF
-done
+# Then re-run aggregation
+sbatch hpc/slurm/stage2_5.sh config.yaml /path/to/PJ39/
 ```
 
-### Memory-Efficient Loading
+## Resource Tuning
 
-```python
-# Load only needed columns
-df = store.load_stats(
-    columns=['sample_name', 'tRNA_annotation', 'count']
-)
-
-# Process in chunks
-processor.process_in_chunks(
-    samples=all_samples,
-    chunk_size=50
-)
-```
-
-## Troubleshooting
-
-### "pyarrow not installed"
+If jobs are getting killed (OOM) or timing out:
 
 ```bash
-pip install pyarrow
-# Or with compression support:
-pip install "pyarrow[compression]"
+# Increase memory for alignment-heavy samples:
+sbatch --mem=16G --array=0-255%32 hpc/slurm/stage0c_1.sh ...
+
+# Increase time for large reference databases:
+sbatch --time=01:30:00 --array=0-255%32 hpc/slurm/stage0c_1.sh ...
+
+# Reduce concurrent tasks if admin requests:
+sbatch --array=0-255%16 hpc/slurm/stage0c_1.sh ...
 ```
 
-### Jobs running slow
+## Outputs
 
-```bash
-# Check system load
-sinfo  # View partition status
-squeue # View queue
-
-# Try different partition
-sbatch --partition=medium process_charge.sh
-
-# Increase time limit
-sbatch --time=02:00:00 process_charge.sh
-```
-
-### Out of memory errors
-
-```bash
-# Increase memory
-sbatch --mem=16G process_charge.sh
-
-# Reduce CPUs to lower contention
-sbatch --cpus-per-task=2 process_charge.sh
-```
-
-## File Structure Expected
+After completion, find results in `project_dir/`:
 
 ```
-project_data/
-├── stats/
-│   ├── stats_sample001.csv  (input)
-│   ├── stats_sample002.csv  (input)
-│   └── ...
-└── charge/
-    ├── charge_sample001.parquet  (output - 15x compressed)
-    ├── charge_sample002.parquet  (output)
-    └── ...
+project_dir/
+├── data/
+│   ├── AdapterRemoval/    # Merged reads
+│   ├── BC_split/          # Barcode-split FASTQs + read_length_distributions.csv
+│   ├── UMI_trimmed/       # UMI-trimmed reads
+│   ├── SWalign/           # Alignment JSONs
+│   └── stats_collection/  # Per-sample + aggregate stats CSVs
+├── charge_analysis/       # charge_df_{aa,codon,transcript}.csv
+├── QC_summary.csv         # One row per sample, all metrics
+├── QC_report.html         # Interactive Plotly dashboard
+├── sample_df.xlsx         # Updated sample metadata
+├── logs/                  # SLURM job logs
+└── preprocessing.log      # Pipeline log
 ```
-
-## Performance Benchmarks
-
-For 256 samples with ~2 MB CSV files each:
-
-| Operation | CSV | Parquet | Speedup |
-|-----------|-----|---------|---------|
-| File size | 500 MB | 33 MB | 15x smaller |
-| Load all | 120 sec | 7.5 sec | 16x faster |
-| Load + filter | 165 sec | 10 sec | 16.5x faster |
-| Memory usage | 800 MB | 50 MB | 16x less |
-
-## Next Steps
-
-1. Review detailed documentation: `hpc/slurm/README.md`
-2. Check implementation: `trnaseq/io/storage.py`
-3. Review batch utilities: `trnaseq/io/batch.py`
-4. Test locally first before HPC submission
-
-## Common Commands
-
-```bash
-# Check if pyarrow is installed
-python -c "import pyarrow; print(pyarrow.__version__)"
-
-# List available Parquet files
-ls -lh data/charge/*.parquet
-
-# Check total storage
-du -sh data/charge/
-
-# Test single sample locally
-SLURM_ARRAY_TASK_ID=0 SAMPLE_ID=sample001 bash process_charge.sh
-
-# Cancel running job
-scancel <JOB_ID>
-
-# Check completed samples
-python << 'EOF'
-from pathlib import Path
-parquet_files = list(Path('data/charge').glob('charge_*.parquet'))
-print(f"Completed: {len(parquet_files)} samples")
-EOF
-```
-
-## Support
-
-- Full documentation: `hpc/slurm/README.md`
-- API docs: `trnaseq/io/storage.py`
-- Batch utilities: `trnaseq/io/batch.py`
-- Example usage: `trnaseq/io/test_storage_api.py`

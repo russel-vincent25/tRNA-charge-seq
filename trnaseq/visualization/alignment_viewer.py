@@ -19,6 +19,8 @@ import bz2
 import json
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -201,8 +203,6 @@ class AlignmentViewer:
         if output:
             plt.savefig(output, dpi=300, bbox_inches='tight')
             print(f"  Saved: {output}")
-        else:
-            plt.show()
 
         return fig
 

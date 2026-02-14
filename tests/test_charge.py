@@ -71,7 +71,7 @@ class TestChargeQuantifier:
 
         assert quantifier is not None
         assert quantifier.charge_count_col == 'count'
-        assert quantifier.RPM_count_col == 'UMIcount'
+        assert quantifier.RPM_count_col == 'count'
         assert quantifier.stats_df is not None
         assert len(quantifier.stats_df) > 0
 

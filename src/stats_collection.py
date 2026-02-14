@@ -173,13 +173,29 @@ class STATS_collection:
             # as an empty string and not as NaN.
             stat_df = pd.read_csv(stats_fh, keep_default_na=False, dtype=self.stats_csv_header_td)
 
+        # Compute fragment counts BEFORE the 3p_cover filter
+        ct = stat_df['count']
+        _5p = stat_df['5p_cover'].astype(bool)
+        _3p = stat_df['3p_cover'].astype(bool)
+        fragment_counts = {
+            'N_full_length': int(ct[_5p & _3p].sum()),
+            'N_rt_dropoff': int(ct[~_5p & _3p].sum()),
+            'N_5p_fragment': int(ct[_5p & ~_3p].sum()),
+            'N_degraded': int(ct[~_5p & ~_3p].sum()),
+            'N_total_aligned': int(ct.sum()),
+        }
+
         # Aggregate dataframe and write as CSV file:
         # Here: also filter sequences with long 5p_non-temp sequences (these are likely template switch products)
         row_mask = (stat_df['3p_cover']) & (stat_df['3p_non-temp'] == '')
         agg_df = stat_df[row_mask].groupby(self.stats_agg_cols[:-1], as_index=False).agg({"count": "sum"})
         agg_df.to_csv(stats_agg_fnam, header=True, index=False)
 
-        return(stats_agg_fnam)
+        return({
+            'stats_agg_path': stats_agg_fnam,
+            'fragment_counts': fragment_counts,
+            'sample_name_unique': row['sample_name_unique'],
+        })
 
     def _read_non_common(self, row, stats_fh):
         # Read fastq files must be read to
@@ -293,7 +309,12 @@ class STATS_collection:
         # Read common sequences observations for this sample:
         common_obs_fn = '{}/{}_common-seq-obs.json'.format(self.align_dir_abs, row['sample_name_unique'])
         with open(common_obs_fn, 'r') as fh_in:
-            common_obs = json.load(fh_in)
+            common_obs_raw = json.load(fh_in)
+        # Handle both formats: raw list or dict with 'common_obs' key
+        if isinstance(common_obs_raw, dict) and 'common_obs' in common_obs_raw:
+            common_obs = common_obs_raw['common_obs']
+        else:
+            common_obs = common_obs_raw
 
         # Open the alignment results:
         SWres_fnam = '{}/{}_SWalign.json.bz2'.format(self.align_dir_abs, 'common-seqs')
@@ -366,7 +387,15 @@ class STATS_collection:
                 csv_line = ','.join(map(str, line_lst))
                 print(csv_line, file=stats_fh)
 
-    def _concat_stats(self, csv_paths):
+    def _concat_stats(self, results):
+        # Backward compat: results may be list of strings (legacy) or list of dicts (new)
+        if results and isinstance(results[0], str):
+            csv_paths = results
+            self.fragment_counts = {}
+        else:
+            csv_paths = [r['stats_agg_path'] for r in results]
+            self.fragment_counts = {r['sample_name_unique']: r['fragment_counts'] for r in results}
+
         # Concatenate all the aggregated stats csv files:
         stats_agg_fnam = '{}/ALL_stats_aggregate.csv'.format(self.stats_dir_abs)
         with open(stats_agg_fnam, 'w') as fh_out:

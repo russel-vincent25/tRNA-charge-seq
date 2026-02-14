@@ -11,7 +11,7 @@ Combines all preprocessing and analysis steps into a single script:
 - Stage 2: Stats Collection
 - Stage 3: Charge Quantification (optional)
 - Stage 4: Parquet Storage (optional)
-- Stage 5: Alignment QC Reports (optional)
+- Stage 5: QC Summary Report (optional)
 
 Output:
 - inp_file_df.xlsx (input file summary)
@@ -19,15 +19,14 @@ Output:
 - ALL_stats_aggregate.csv (combined statistics for charge quantification)
 - charge_analysis/ (charge quantification results, if enabled)
 - parquet_data/ (parquet-format data, if enabled)
-- qc_reports/ (alignment QC reports, if enabled)
+- QC_summary.csv, QC_report.html (QC dashboard, if enabled)
 
 Usage:
-    python scripts/run_preprocessing.py \
+    python -m trnaseq pipeline \
         --config config.yaml \
-        --output-dir output/ \
+        --project-dir /path/to/project/ \
         --n-jobs 8 \
-        --parquet \
-        --qc-reports
+        --parquet
 
 Author: Based on projects/example/process_data.ipynb
 Date: 2026-02-11
@@ -42,8 +41,8 @@ import yaml
 import pandas as pd
 import numpy as np
 
-# Add repo to path
-repo_path = Path(__file__).parent.parent
+# Add repo root to path for src imports
+repo_path = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(repo_path))
 
 from src.misc import (
@@ -70,10 +69,17 @@ except ImportError:
     STORAGE_AVAILABLE = False
 
 try:
-    from trnaseq.visualization.alignment_viewer import AlignmentViewer
-    VIEWER_AVAILABLE = True
+    from trnaseq.qc.report import QCReportGenerator
+    QC_AVAILABLE = True
 except ImportError:
-    VIEWER_AVAILABLE = False
+    QC_AVAILABLE = False
+
+
+# ------------------------------------------------------------------
+# Path fields in config that should be resolved relative to project_dir
+# ------------------------------------------------------------------
+_PATH_FIELDS = ['sample_list', 'index_list', 'SWIPE_score_mat', 'common_seqs']
+_DICT_PATH_FIELDS = ['tRNA_database']  # dict values are paths
 
 
 class PreprocessingPipeline:
@@ -83,32 +89,55 @@ class PreprocessingPipeline:
     Runs stages 0a-5 and outputs key files for downstream analysis.
     """
 
-    def __init__(self, config_file, output_dir, n_jobs=4):
+    def __init__(self, config_file, project_dir, n_jobs=4, sample_index=None):
         """
         Initialize pipeline
 
         Parameters:
             config_file: YAML configuration file
-            output_dir: Output directory for results
+            project_dir: Project directory (must contain data/{seq_dir}/ for stages 0-1)
             n_jobs: Number of parallel jobs
+            sample_index: Process only sample at this 0-based index (for SLURM array jobs)
         """
-        self.config_file = Path(config_file)
-        self.output_dir = Path(output_dir)
+        self.config_file = Path(config_file).resolve()
+        self.project_dir = Path(project_dir).resolve()
         self.n_jobs = n_jobs
-        self.log_file = self.output_dir / "preprocessing.log"
+        self.sample_index = sample_index
+        self.log_file = self.project_dir / "preprocessing.log"
 
         # Create output directory
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.project_dir.mkdir(parents=True, exist_ok=True)
 
         # Load configuration
         with open(self.config_file, 'r') as f:
             self.config = yaml.safe_load(f)
+
+        # Resolve relative paths in config against project_dir
+        self._resolve_config_paths()
 
         # Initialize status tracking
         self.status = {
             'start_time': datetime.now(),
             'stages_completed': []
         }
+
+    def _resolve_config_paths(self):
+        """Resolve relative paths in config against project_dir.
+
+        A path is treated as relative if it doesn't start with '/'.
+        Absolute paths pass through unchanged. None/null values are skipped.
+        """
+        for key in _PATH_FIELDS:
+            val = self.config.get(key)
+            if val is not None and not os.path.isabs(val):
+                self.config[key] = str(self.project_dir / val)
+
+        for key in _DICT_PATH_FIELDS:
+            d = self.config.get(key)
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    if v is not None and not os.path.isabs(v):
+                        d[k] = str(self.project_dir / v)
 
     def log(self, message, level="INFO"):
         """Log message to file and console"""
@@ -151,7 +180,7 @@ class PreprocessingPipeline:
         self.log("Setting up directories...")
 
         self.dir_dict = {
-            'NBdir': str(self.output_dir),
+            'NBdir': str(self.project_dir),
             'data_dir': 'data',
             'seq_dir': self.config.get('seq_dir', 'raw_fastq'),
             'AdapterRemoval_dir': 'AdapterRemoval',
@@ -161,20 +190,25 @@ class PreprocessingPipeline:
             'stats_dir': 'stats_collection',
             'charge_dir': 'charge_analysis',
             'parquet_dir': 'parquet_data',
-            'qc_dir': 'qc_reports',
         }
 
         # Create data directory
-        (self.output_dir / 'data').mkdir(exist_ok=True)
+        (self.project_dir / 'data').mkdir(exist_ok=True)
 
         # Create subdirectories under data/
         for dir_name in ['AdapterRemoval', 'BC_split', 'UMI_trimmed',
                          'SWalign', 'stats_collection']:
-            (self.output_dir / 'data' / dir_name).mkdir(exist_ok=True)
+            (self.project_dir / 'data' / dir_name).mkdir(exist_ok=True)
 
         # Create analysis directories
-        for dir_name in ['charge_analysis', 'parquet_data', 'qc_reports']:
-            (self.output_dir / dir_name).mkdir(exist_ok=True)
+        for dir_name in ['charge_analysis', 'parquet_data']:
+            (self.project_dir / dir_name).mkdir(exist_ok=True)
+
+    def _get_working_sample_df(self):
+        """Return sample_df subset if --sample-index is set, else full."""
+        if self.sample_index is not None:
+            return self.sample_df.iloc[[self.sample_index]].copy()
+        return self.sample_df
 
     def stage_0a_adapter_removal(self):
         """Stage 0a: Adapter Removal & Merging"""
@@ -236,13 +270,24 @@ class PreprocessingPipeline:
         downsample_percentile = self.config.get('downsample_percentile', None)
         downsample_absolute = self.config.get('downsample_absolute', None)
 
+        working_df = self._get_working_sample_df()
         UMItrim_obj = UMI_trim(
-            self.dir_dict, self.sample_df,
-            overwrite_dir=self.config.get('overwrite', True),
+            self.dir_dict, working_df,
+            overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
             downsample_percentile=downsample_percentile,
             downsample_absolute=downsample_absolute
         )
-        self.sample_df = UMItrim_obj.run_parallel(n_jobs=self.n_jobs)
+        result_df = UMItrim_obj.run_parallel(n_jobs=self.n_jobs)
+        if self.sample_index is not None:
+            # Merge single-sample results back into full sample_df
+            merge_cols = [c for c in result_df.columns if c not in self.sample_df.columns or c == 'sample_name_unique']
+            extra_cols = [c for c in result_df.columns if c not in self.sample_df.columns]
+            if extra_cols:
+                self.sample_df = self.sample_df.merge(
+                    result_df[['sample_name_unique'] + extra_cols],
+                    on='sample_name_unique', how='left')
+        else:
+            self.sample_df = result_df
 
         # Log statistics
         avg_umi_pct = self.sample_df['percent_UMI_obs-vs-exp'].mean()
@@ -270,16 +315,25 @@ class PreprocessingPipeline:
         MIN_SCORE_ALIGN = self.config.get('min_score_align', 15)
 
         # Run alignment
+        working_df = self._get_working_sample_df()
         align_obj = SWIPE_align(
-            self.dir_dict, tRNA_database, self.sample_df,
+            self.dir_dict, tRNA_database, working_df,
             SWIPE_score_mat,
             gap_penalty=self.config.get('gap_penalty', 6),
             extension_penalty=self.config.get('extension_penalty', 3),
             min_score_align=MIN_SCORE_ALIGN,
             common_seqs=common_seqs,
-            overwrite_dir=self.config.get('overwrite', True)
+            overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
         )
-        self.sample_df = align_obj.run_parallel(n_jobs=self.n_jobs)
+        result_df = align_obj.run_parallel(n_jobs=self.n_jobs)
+        if self.sample_index is not None:
+            merge_cols = [c for c in result_df.columns if c not in self.sample_df.columns]
+            if merge_cols:
+                self.sample_df = self.sample_df.merge(
+                    result_df[['sample_name_unique'] + merge_cols],
+                    on='sample_name_unique', how='left')
+        else:
+            self.sample_df = result_df
 
         # Log statistics
         avg_mapping = self.sample_df['Mapping_percent'].mean()
@@ -298,6 +352,17 @@ class PreprocessingPipeline:
 
         common_seqs = self.config.get('common_seqs', None)
 
+        # Check if common-seq-obs files actually exist in the SWalign directory
+        # (common_seqs config points to the fasta used during alignment,
+        #  but STATS_collection needs the *result* files to exist)
+        if common_seqs is not None:
+            align_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
+            common_obs_files = list(align_dir.glob('*_common-seq-obs.json*'))
+            if not common_obs_files:
+                self.log("  WARNING: common_seqs configured but no common-seq-obs files "
+                        "found in SWalign/. Setting common_seqs=None.", level="WARN")
+                common_seqs = None
+
         # Run stats collection
         stats_obj = STATS_collection(
             self.dir_dict, self.tRNA_data, self.sample_df,
@@ -305,6 +370,23 @@ class PreprocessingPipeline:
             overwrite_dir=self.config.get('overwrite', True)
         )
         self.stats_df = stats_obj.run_parallel(n_jobs=self.n_jobs)
+
+        # Copy fragment counts to sample_df
+        self.fragment_counts = getattr(stats_obj, 'fragment_counts', {})
+        if self.fragment_counts:
+            for col in ['N_full_length', 'N_rt_dropoff', 'N_5p_fragment', 'N_degraded', 'N_total_aligned']:
+                self.sample_df[col] = self.sample_df['sample_name_unique'].map(
+                    lambda sn, c=col: self.fragment_counts.get(sn, {}).get(c, 0)
+                )
+
+            # Recalculate Mapping_percent from fragment counts:
+            # N_total_aligned / N_after_trim * 100
+            if 'N_after_trim' in self.sample_df.columns:
+                self.sample_df['Mapping_percent'] = np.where(
+                    self.sample_df['N_after_trim'] > 0,
+                    self.sample_df['N_total_aligned'] / self.sample_df['N_after_trim'] * 100,
+                    0.0
+                )
 
         self.log(f"  Collected stats for {len(self.stats_df)} entries")
 
@@ -322,7 +404,7 @@ class PreprocessingPipeline:
             return
 
         # Get stats file
-        stats_file = self.output_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
+        stats_file = self.project_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
         if not stats_file.exists():
             self.log(f"ERROR: Stats file not found: {stats_file}", level="ERROR")
             return
@@ -348,7 +430,7 @@ class PreprocessingPipeline:
             self.log(f"  Loaded {len(quantifier.stats_df)} alignment records")
 
             # Create output directory
-            charge_dir = self.output_dir / 'charge_analysis'
+            charge_dir = self.project_dir / 'charge_analysis'
             charge_dir.mkdir(exist_ok=True)
 
             # Quantify and export for each level
@@ -381,6 +463,7 @@ class PreprocessingPipeline:
                 summary_df = pd.concat(summary_list, ignore_index=True)
                 summary_file = charge_dir / 'charge_summary.csv'
                 summary_df.to_csv(summary_file, index=False)
+                self.charge_summary_df = summary_df
                 self.log(f"    Saved: {summary_file.name}")
 
             self.status['stages_completed'].append('3')
@@ -404,14 +487,14 @@ class PreprocessingPipeline:
 
         try:
             # Initialize data store
-            parquet_dir = self.output_dir / 'parquet_data'
+            parquet_dir = self.project_dir / 'parquet_data'
             store = tRNAseqDataStore(str(parquet_dir))
 
             compression = self.config.get('parquet_compression', 'snappy')
             self.log(f"  Compression: {compression}")
 
             # Convert stats CSV to Parquet
-            stats_file = self.output_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
+            stats_file = self.project_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
             if stats_file.exists():
                 self.log(f"  Converting stats to Parquet...")
                 stats_df = pd.read_csv(stats_file)
@@ -432,19 +515,16 @@ class PreprocessingPipeline:
                 self.log(f"    Compression ratio: {ratio:.1f}x")
 
             # Convert charge CSVs to Parquet if they exist
-            charge_dir = self.output_dir / 'charge_analysis'
+            charge_dir = self.project_dir / 'charge_analysis'
             if charge_dir.exists():
+                charge_parquet_dir = parquet_dir / 'charge'
+                charge_parquet_dir.mkdir(parents=True, exist_ok=True)
                 for csv_file in charge_dir.glob('charge_df_*.csv'):
                     self.log(f"  Converting {csv_file.name} to Parquet...")
                     df = pd.read_csv(csv_file)
-                    parquet_file = store.save_charge_data(
-                        df,
-                        compression=compression
-                    )
-                    # Rename to match CSV name
-                    new_name = parquet_dir / 'charge' / csv_file.with_suffix('.parquet').name
-                    parquet_file.rename(new_name)
-                    self.log(f"    Saved: {new_name.name}")
+                    out_path = charge_parquet_dir / csv_file.with_suffix('.parquet').name
+                    df.to_parquet(out_path, compression=compression)
+                    self.log(f"    Saved: {out_path.name}")
 
             self.status['stages_completed'].append('4')
             self.log("  Parquet conversion complete!")
@@ -454,77 +534,68 @@ class PreprocessingPipeline:
             import traceback
             self.log(traceback.format_exc(), level="ERROR")
 
-    def stage_5_alignment_qc(self):
-        """Stage 5: Alignment QC Reports (optional)"""
+    def stage_5_qc_report(self):
+        """Stage 5: QC Summary Report
+
+        Generates QC_summary.csv and QC_report.html from data already
+        computed by earlier stages. No new computation — just formatting.
+        """
         self.log("=" * 60)
-        self.log("Stage 5: Alignment QC Reports")
+        self.log("Stage 5: QC Summary Report")
         self.log("=" * 60)
 
-        if not VIEWER_AVAILABLE:
-            self.log("WARNING: AlignmentViewer not available. Skipping stage 5.", level="WARN")
-            self.log("  Install with: pip install -e . (from repo root)", level="WARN")
+        if not QC_AVAILABLE:
+            self.log("WARNING: QCReportGenerator not available. Skipping stage 5.", level="WARN")
             return
 
         try:
-            qc_dir = self.output_dir / 'qc_reports'
-            qc_dir.mkdir(exist_ok=True)
+            # Load stats_df if not already in memory
+            stats_df = getattr(self, 'stats_df', None)
+            if stats_df is None:
+                stats_file = (self.project_dir / 'data' / 'stats_collection'
+                              / 'ALL_stats_aggregate.csv')
+                if stats_file.exists():
+                    stats_df = pd.read_csv(stats_file)
 
-            # Get QC settings
-            qc_format = self.config.get('qc_report_format', 'html')
-            top_n = self.config.get('qc_top_trnas', 20)
+            # Load charge summary if not already in memory
+            charge_summary = getattr(self, 'charge_summary_df', None)
+            if charge_summary is None:
+                cs_file = self.project_dir / 'charge_analysis' / 'charge_summary.csv'
+                if cs_file.exists():
+                    charge_summary = pd.read_csv(cs_file)
 
-            # Find alignment JSON files
-            align_dir = self.output_dir / 'data' / 'SWalign'
-            json_files = list(align_dir.glob('*_SWalign.json.bz2'))
+            # Ensure we have sample_df and inp_file_df
+            sample_df = getattr(self, 'sample_df', None)
+            inp_file_df = getattr(self, 'inp_file_df', pd.DataFrame())
 
-            if not json_files:
-                self.log("  No alignment JSON files found", level="WARN")
+            if sample_df is None:
+                self.log("ERROR: sample_df not available for QC report", level="ERROR")
                 return
 
-            self.log(f"  Found {len(json_files)} alignment files")
-            self.log(f"  Generating QC reports for top {top_n} tRNAs per sample")
+            qc = QCReportGenerator(
+                project_dir=self.project_dir,
+                sample_df=sample_df,
+                inp_file_df=inp_file_df,
+                charge_summary_df=charge_summary,
+                stats_df=stats_df,
+                bc_dir=self.project_dir / 'data' / 'BC_split',
+            )
 
-            for json_file in json_files:
-                sample_name = json_file.name.replace('_SWalign.json.bz2', '')
-                self.log(f"  Processing {sample_name}...")
+            # QC_summary.csv
+            summary_path = self.project_dir / 'QC_summary.csv'
+            qc_summary = qc.save_summary_csv(summary_path)
+            self.log(f"  Saved: {summary_path.name} ({len(qc_summary)} samples)")
 
-                try:
-                    viewer = AlignmentViewer(str(json_file))
-
-                    # List top tRNAs by read count
-                    trna_df = viewer.list_trnas(min_reads=10)
-
-                    if trna_df.empty:
-                        self.log(f"    No tRNAs with >= 10 reads", level="WARN")
-                        continue
-
-                    # Save tRNA list
-                    trna_list_file = qc_dir / f'{sample_name}_trna_list.csv'
-                    trna_df.to_csv(trna_list_file, index=False)
-                    self.log(f"    Saved tRNA list: {trna_list_file.name}")
-
-                    # Generate reports for top N tRNAs
-                    top_trnas = trna_df.head(top_n)['tRNA'].tolist()
-
-                    for i, trna_id in enumerate(top_trnas[:5], 1):  # Limit to 5 for speed
-                        self.log(f"    Generating report for {trna_id} ({i}/5)...")
-
-                        if qc_format == 'html':
-                            output_file = qc_dir / f'{sample_name}_{trna_id}_report.html'
-                            viewer.create_html_report(trna_id, output=str(output_file))
-                        else:
-                            output_file = qc_dir / f'{sample_name}_{trna_id}_coverage.png'
-                            viewer.plot_coverage(trna_id, output=str(output_file))
-
-                except Exception as e:
-                    self.log(f"    ERROR processing {sample_name}: {str(e)}", level="ERROR")
-                    continue
+            # QC_report.html
+            report_path = self.project_dir / 'QC_report.html'
+            qc.generate_html_report(report_path)
+            self.log(f"  Saved: {report_path.name}")
 
             self.status['stages_completed'].append('5')
             self.log("  QC report generation complete!")
 
         except Exception as e:
-            self.log(f"ERROR in QC reports: {str(e)}", level="ERROR")
+            self.log(f"ERROR in QC report: {str(e)}", level="ERROR")
             import traceback
             self.log(traceback.format_exc(), level="ERROR")
 
@@ -535,30 +606,30 @@ class PreprocessingPipeline:
         self.log("=" * 60)
 
         # Save inp_file_df
-        inp_file_output = self.output_dir / 'inp_file_df.xlsx'
+        inp_file_output = self.project_dir / 'inp_file_df.xlsx'
         self.inp_file_df.to_excel(inp_file_output, index=False)
         self.log(f"  Saved: {inp_file_output}")
 
         # Save sample_df
-        sample_df_output = self.output_dir / 'sample_df.xlsx'
+        sample_df_output = self.project_dir / 'sample_df.xlsx'
         self.sample_df.to_excel(sample_df_output, index=False)
         self.log(f"  Saved: {sample_df_output}")
 
         # ALL_stats_aggregate.csv should already be in stats_collection/
-        stats_file = self.output_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
+        stats_file = self.project_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
         if stats_file.exists():
             # Copy to output root for easy access
             import shutil
-            shutil.copy(stats_file, self.output_dir / 'ALL_stats_aggregate.csv')
+            shutil.copy(stats_file, self.project_dir / 'ALL_stats_aggregate.csv')
             self.log(f"  Saved: ALL_stats_aggregate.csv")
         else:
             self.log(f"  WARNING: ALL_stats_aggregate.csv not found", level="WARN")
 
         # Copy charge analysis results to output root
         if hasattr(self, 'charge_results') and self.charge_results:
-            charge_dir = self.output_dir / 'charge_analysis'
+            charge_dir = self.project_dir / 'charge_analysis'
             for level, df in self.charge_results.items():
-                output_file = self.output_dir / f'charge_df_{level}.csv'
+                output_file = self.project_dir / f'charge_df_{level}.csv'
                 import shutil
                 shutil.copy(
                     charge_dir / f'charge_df_{level}.csv',
@@ -566,43 +637,170 @@ class PreprocessingPipeline:
                 )
                 self.log(f"  Saved: {output_file.name}")
 
-    def run(self):
-        """Run complete preprocessing pipeline"""
+    @staticmethod
+    def parse_stages(stages_str):
+        """
+        Parse --stages argument into a set of stage identifiers.
+
+        Accepts:
+            'all'       -> all stages
+            '0-2'       -> stages 0a, 0b, 0c, 1, 2
+            '3-5'       -> stages 3, 4, 5
+            '0a,1,3'    -> specific stages
+            '2,3,5'     -> specific stages
+
+        Returns:
+            Set of stage identifiers: {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
+        """
+        ALL_STAGES = {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
+
+        if stages_str == 'all':
+            return ALL_STAGES
+
+        stages = set()
+        for part in stages_str.split(','):
+            part = part.strip()
+            if '-' in part and not part.startswith('0'):
+                # Range like '3-5'
+                start, end = part.split('-')
+                # Expand numeric ranges
+                for i in range(int(start), int(end) + 1):
+                    stages.add(str(i))
+            elif part == '0-2' or part == '0-1':
+                # Special: includes sub-stages
+                stages.update({'0a', '0b', '0c'})
+                if part == '0-2':
+                    stages.update({'1', '2'})
+                else:
+                    stages.add('1')
+            elif part in ALL_STAGES:
+                stages.add(part)
+            elif part == '0':
+                stages.update({'0a', '0b', '0c'})
+            else:
+                raise ValueError(f"Unknown stage: '{part}'. Valid: {sorted(ALL_STAGES)}")
+
+        return stages
+
+    def _load_prerequisites(self, stages):
+        """
+        Load data prerequisites when skipping early stages.
+
+        When stages 0-1 are skipped, we still need sample_df and tRNA_data
+        for later stages. Load them from existing files.
+        """
+        # Always need sample_df -- load from existing file or from config
+        skip_early = not stages.intersection({'0a', '0b', '0c', '1'})
+        if skip_early:
+            # Try loading existing sample_df from output directory
+            # Check both output root and data/ subdirectory
+            sample_df_path = self.project_dir / 'sample_df.xlsx'
+            if not sample_df_path.exists():
+                sample_df_path = self.project_dir / 'data' / 'sample_df.xlsx'
+
+            if sample_df_path.exists():
+                self.log(f"Loading existing sample_df from {sample_df_path}")
+                self.sample_df = pd.read_excel(sample_df_path)
+                # Also load inp_file_df if it exists
+                inp_file_path = self.project_dir / 'inp_file_df.xlsx'
+                if not inp_file_path.exists():
+                    inp_file_path = self.project_dir / 'data' / 'inp_file_df.xlsx'
+                if inp_file_path.exists():
+                    self.inp_file_df = pd.read_excel(inp_file_path)
+                else:
+                    self.inp_file_df = pd.DataFrame()
+            else:
+                # Fall back to loading from config
+                self.log("No existing sample_df found, loading from config...")
+                self.load_sample_info()
+
+        # Stage 2 needs tRNA_data -- load from config if stage 1 was skipped
+        if '2' in stages and '1' not in stages:
+            if not hasattr(self, 'tRNA_data') or self.tRNA_data is None:
+                self.log("Loading tRNA database for stats collection...")
+                tRNA_database = self.config['tRNA_database']
+                self.tRNA_data = read_tRNAdb_info(tRNA_database)
+
+    def run(self, stages=None):
+        """
+        Run preprocessing pipeline.
+
+        Args:
+            stages: Set of stage identifiers to run, or None for all stages.
+                    e.g. {'2', '3', '5'} to run only stats, charge, and QC.
+        """
+        if stages is None:
+            stages = {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
+
         try:
             self.log("Starting tRNA-charge-seq preprocessing pipeline")
             self.log(f"Configuration: {self.config_file}")
-            self.log(f"Output directory: {self.output_dir}")
+            self.log(f"Project directory: {self.project_dir}")
             self.log(f"Parallel jobs: {self.n_jobs}")
+            self.log(f"Stages to run: {', '.join(sorted(stages))}")
 
-            # Setup
-            self.load_sample_info()
+            if self.sample_index is not None:
+                self.log(f"Sample index: {self.sample_index} (single-sample mode)")
+                if stages.intersection({'0a', '0b'}):
+                    self.log("WARNING: --sample-index has no effect on stages 0a/0b "
+                             "(they process all file pairs)", level="WARN")
+
+            # Validate project directory for early stages
+            if stages.intersection({'0a', '0b', '0c', '1'}):
+                seq_dir = self.config.get('seq_dir', 'raw_fastq')
+                raw_data_path = self.project_dir / 'data' / seq_dir
+                if not raw_data_path.is_dir():
+                    raise FileNotFoundError(
+                        f"Raw data directory not found: {raw_data_path}\n"
+                        f"--project-dir must point to the project root containing data/{seq_dir}/"
+                    )
+
+            # Setup directories
             self.setup_directories()
 
+            # Load sample info if running early stages
+            if stages.intersection({'0a', '0b', '0c', '1'}):
+                self.load_sample_info()
+
+            # Load prerequisites for later stages when skipping early ones
+            self._load_prerequisites(stages)
+
             # Run preprocessing stages (0-2)
-            self.stage_0a_adapter_removal()
-            self.stage_0b_barcode_split()
-            self.stage_0c_umi_trim()
-            self.stage_1_alignment()
-            self.stage_2_stats_collection()
+            if '0a' in stages:
+                self.stage_0a_adapter_removal()
+            if '0b' in stages:
+                self.stage_0b_barcode_split()
+            if '0c' in stages:
+                self.stage_0c_umi_trim()
+            if '1' in stages:
+                self.stage_1_alignment()
+            if '2' in stages:
+                self.stage_2_stats_collection()
 
-            # Run optional analysis stages (3-5)
-            if self.config.get('run_charge_quantification', True):
-                self.stage_3_charge_quantification()
+            # Run analysis stages (3-5)
+            if '3' in stages:
+                if self.config.get('run_charge_quantification', True):
+                    self.stage_3_charge_quantification()
+                else:
+                    self.log("Skipping Stage 3: Charge Quantification (disabled in config)")
+
+            if '4' in stages:
+                if self.config.get('run_parquet_storage', False):
+                    self.stage_4_parquet_storage()
+                else:
+                    self.log("Skipping Stage 4: Parquet Storage (disabled in config)")
+
+            if '5' in stages:
+                if self.config.get('run_qc_report', True):
+                    self.stage_5_qc_report()
+                else:
+                    self.log("Skipping Stage 5: QC Report (disabled in config)")
+
+            # Save outputs (skip in single-sample mode)
+            if self.sample_index is None:
+                self.save_outputs()
             else:
-                self.log("Skipping Stage 3: Charge Quantification (disabled in config)")
-
-            if self.config.get('run_parquet_storage', False):
-                self.stage_4_parquet_storage()
-            else:
-                self.log("Skipping Stage 4: Parquet Storage (disabled in config)")
-
-            if self.config.get('run_alignment_qc', False):
-                self.stage_5_alignment_qc()
-            else:
-                self.log("Skipping Stage 5: Alignment QC (disabled in config)")
-
-            # Save outputs
-            self.save_outputs()
+                self.log("Skipping save_outputs in single-sample mode")
 
             # Final summary
             self.status['end_time'] = datetime.now()
@@ -625,11 +823,15 @@ class PreprocessingPipeline:
                 self.log(f"  - charge_df_aa.csv")
                 self.log(f"  - charge_summary.csv")
 
+            if '5' in self.status['stages_completed']:
+                self.log(f"  - QC_summary.csv")
+                self.log(f"  - QC_report.html")
+
             self.log("")
             if '3' not in self.status['stages_completed']:
                 self.log("Next step: Run charge quantification (Stage 3)")
-                self.log("  Re-run with charge quantification enabled in config, or:")
-                self.log("  python -m trnaseq.cli.commands.quantify ALL_stats_aggregate.csv")
+                self.log("  Re-run with --stages 3 or:")
+                self.log("  python -m trnaseq quantify -i ALL_stats_aggregate.csv -o charge.csv")
 
         except Exception as e:
             self.log(f"Pipeline failed: {str(e)}", level="ERROR")
@@ -645,8 +847,12 @@ def main():
         help='YAML configuration file'
     )
     parser.add_argument(
-        '--output-dir', required=True,
-        help='Output directory'
+        '--project-dir', required=False, default=None,
+        help='Project directory (must contain data/raw_fastq/ for stages 0-1)'
+    )
+    parser.add_argument(
+        '--output-dir', required=False, default=None, dest='output_dir_deprecated',
+        help='Deprecated: use --project-dir instead'
     )
     parser.add_argument(
         '--n-jobs', type=int, default=4,
@@ -661,21 +867,30 @@ def main():
         help='Save to Parquet format (Stage 4)'
     )
     parser.add_argument(
-        '--qc-reports', action='store_true',
-        help='Generate alignment QC reports (Stage 5)'
-    )
-    parser.add_argument(
         '--stages', type=str, default='all',
         help='Stages to run: "all", "0-2", "3-5", or specific like "0a,0b,1,3"'
+    )
+    parser.add_argument(
+        '--sample-index', type=int, default=None,
+        help='Process only sample at this 0-based index (for SLURM array jobs)'
     )
 
     args = parser.parse_args()
 
+    # Resolve --project-dir / --output-dir (deprecated)
+    project_dir = args.project_dir or args.output_dir_deprecated
+    if project_dir is None:
+        parser.error('--project-dir is required')
+    if args.output_dir_deprecated and not args.project_dir:
+        print('Warning: --output-dir is deprecated, use --project-dir instead',
+              file=sys.stderr)
+
     # Run pipeline
     pipeline = PreprocessingPipeline(
         config_file=args.config,
-        output_dir=args.output_dir,
-        n_jobs=args.n_jobs
+        project_dir=project_dir,
+        n_jobs=args.n_jobs,
+        sample_index=args.sample_index,
     )
 
     # Override config with CLI arguments
@@ -683,16 +898,11 @@ def main():
         pipeline.config['run_charge_quantification'] = False
     if args.parquet:
         pipeline.config['run_parquet_storage'] = True
-    if args.qc_reports:
-        pipeline.config['run_alignment_qc'] = True
 
-    # Note: --stages argument is parsed but not yet implemented
-    # This would require refactoring run() to support selective stage execution
-    if args.stages != 'all':
-        print(f"WARNING: --stages option not yet implemented. Running all stages.")
-        print(f"  Requested stages: {args.stages}")
+    # Parse stages
+    stages = PreprocessingPipeline.parse_stages(args.stages)
 
-    pipeline.run()
+    pipeline.run(stages=stages)
 
 
 if __name__ == '__main__':

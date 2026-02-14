@@ -1,4 +1,5 @@
 import os, shutil, bz2, resource, re
+from collections import Counter
 from subprocess import Popen, PIPE, STDOUT
 from Bio import SeqIO
 from Bio.SeqIO.QualityIO import FastqGeneralIterator
@@ -207,6 +208,7 @@ class BC_split:
         Ncc = {k:0 for k in self.sample_df[mask]['sample_name_unique'].values}
         Ncca = {k:0 for k in self.sample_df[mask]['sample_name_unique'].values}
         Ntot = {k:0 for k in self.sample_df[mask]['sample_name_unique'].values}
+        Nreadlen = {k: Counter() for k in self.sample_df[mask]['sample_name_unique'].values}
 
         # Iterate over each record in the fastq file:
         with bz2.open(merged_fastq_fn, "rt") as input_fh:
@@ -225,6 +227,7 @@ class BC_split:
                         fh.write("@{}\n{}\n+\n{}\n".format(title, seq[:-len(bc)], qual[:-len(bc)]))
                         Nmapped += 1
                         Ntot[sample_name] += 1
+                        Nreadlen[sample_name][len(seq) - len(bc)] += 1
                         # Count if CC, CCA or not:
                         if seq[-(len(bc)+2):-len(bc)] == 'CC':
                             Ncc[sample_name] += 1
@@ -237,7 +240,7 @@ class BC_split:
         for _, _, fh in bc_fh:
             fh.close()
         unmapped_fh.close()
-        return(basename, Nmapped, Nunmapped, Ncc, Ncca, Ntot)
+        return(basename, Nmapped, Nunmapped, Ncc, Ncca, Ntot, Nreadlen)
 
     def _collect_stats(self, results):
         # Unfold the results output:
@@ -246,13 +249,15 @@ class BC_split:
         Ntot_union = dict()
         Nmapped_dict = dict()
         Nunmapped_dict = dict()
+        Nreadlen_union = dict()
         for res in results:
-            basename, Nmapped, Nunmapped, Ncc, Ncca, Ntot = res
+            basename, Nmapped, Nunmapped, Ncc, Ncca, Ntot, Nreadlen = res
             Nmapped_dict[basename] = Nmapped
             Nunmapped_dict[basename] = Nunmapped
             Ncc_union.update(Ncc)
             Ncca_union.update(Ncca)
             Ntot_union.update(Ntot)
+            Nreadlen_union.update(Nreadlen)
 
         # Sort mapped/unmapped:
         Nmapped_list = list()
@@ -282,6 +287,15 @@ class BC_split:
         # Dump stats as Excel file:
         self.inp_file_df.to_excel('{}/index-pair_stats.xlsx'.format(self.BC_dir_abs))
         self.sample_df.to_excel('{}/sample_stats.xlsx'.format(self.BC_dir_abs))
+
+        # Save read length distributions as CSV:
+        readlen_rows = []
+        for sn, counter in Nreadlen_union.items():
+            for length, count in sorted(counter.items()):
+                readlen_rows.append({'sample_name_unique': sn, 'read_length': length, 'count': count})
+        if readlen_rows:
+            readlen_df = pd.DataFrame(readlen_rows)
+            readlen_df.to_csv('{}/read_length_distributions.csv'.format(self.BC_dir_abs), index=False)
 
 
 

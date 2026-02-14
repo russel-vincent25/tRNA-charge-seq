@@ -194,12 +194,13 @@ def run_quantify(args):
 
 def main():
     """
-    Standalone entry point for testing the quantify command.
+    Standalone entry point: python -m trnaseq.cli.commands.quantify
     """
     parser = argparse.ArgumentParser(
         description='Quantify tRNA charge levels from alignment statistics'
     )
-    add_quantify_parser(parser._subparsers if hasattr(parser, '_subparsers') else parser.add_subparsers())
+    subparsers = parser.add_subparsers(dest='command')
+    add_quantify_parser(subparsers)
     args = parser.parse_args()
 
     if hasattr(args, 'func'):

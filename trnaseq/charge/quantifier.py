@@ -214,7 +214,20 @@ class ChargeQuantifier:
         It processes the align_3p_nts column to determine charging state:
         - CA/GA: charged (amino acid attached)
         - CC/CG: uncharged (no amino acid)
+
+        When fragment classification columns (is_5p_tRF, is_degraded_tRNA) are
+        available, they are included in the charge denominator to match the
+        TRNA_plot._get_charge_df() formula exactly:
+            charge = CA / (CA + CC + 5p_tRF + degraded)
+        Otherwise, the simpler formula is used:
+            charge = CA / (CA + CC)
         """
+        # Check if fragment columns are available
+        self._has_fragments = all(
+            col in self.stats_df.columns
+            for col in ['is_5p_tRF', 'is_degraded_tRNA', 'is_pre_tRNA']
+        )
+
         # Filter rows based on exclusion criteria
         row_mask = (self.stats_df['count'] > 0)  # all True (dummy)
         if self.excl_align_gap:
@@ -265,51 +278,85 @@ class ChargeQuantifier:
         ).reset_index(drop=True)
 
         # Count charge states based on 3' nucleotides
-        charge_df['CA_count'] = charge_df.apply(
-            lambda row: row[self.charge_count_col] if row['align_3p_nts'] == 'CA' else 0,
-            axis=1
-        )
-        charge_df['CC_count'] = charge_df.apply(
-            lambda row: row[self.charge_count_col] if row['align_3p_nts'] == 'CC' else 0,
-            axis=1
-        )
-        charge_df['GA_count'] = charge_df.apply(
-            lambda row: row[self.charge_count_col] if row['align_3p_nts'] == 'GA' else 0,
-            axis=1
-        )
-        charge_df['CG_count'] = charge_df.apply(
-            lambda row: row[self.charge_count_col] if row['align_3p_nts'] == 'CG' else 0,
-            axis=1
-        )
+        ct = self.charge_count_col
+        nts = charge_df['align_3p_nts']
+        charge_df['CA_count'] = np.where(nts == 'CA', charge_df[ct], 0)
+        charge_df['CC_count'] = np.where(nts == 'CC', charge_df[ct], 0)
+        charge_df['GA_count'] = np.where(nts == 'GA', charge_df[ct], 0)
+        charge_df['CG_count'] = np.where(nts == 'CG', charge_df[ct], 0)
 
-        # Group transcripts with different 3p nt and calculate charge
+        # Derive full-length vs RT drop-off counts from 5p_cover
+        self._has_5p_cover = '5p_cover' in charge_df.columns
+        if self._has_5p_cover:
+            is_full = charge_df['5p_cover'].astype(bool)
+            charge_df['full_length_count'] = np.where(is_full, charge_df[ct], 0)
+            charge_df['rt_dropoff_count'] = np.where(~is_full, charge_df[ct], 0)
+
+        # Count fragment types when available (matches TRNA_plot._get_charge_df)
+        if self._has_fragments:
+            charge_df['5p_tRF'] = np.where(
+                charge_df.get('is_5p_tRF', False).astype(bool), charge_df[ct], 0)
+            charge_df['degraded'] = np.where(
+                charge_df.get('is_degraded_tRNA', False).astype(bool), charge_df[ct], 0)
+            charge_df['pre_tRNA'] = np.where(
+                charge_df.get('is_pre_tRNA', False).astype(bool), charge_df[ct], 0)
+
+        # Group transcripts with different 3p nt (and different 5p_cover)
+        # into a single row per tRNA per sample, summing all count columns.
         charge_df_cols = copy.deepcopy(other_cols)
-        if 'align_3p_nts' in charge_df_cols:
-            charge_df_cols.remove('align_3p_nts')
+        for drop_col in ['align_3p_nts', '5p_cover']:
+            if drop_col in charge_df_cols:
+                charge_df_cols.remove(drop_col)
         charge_df_cols.extend(['CA_count', 'CC_count', 'GA_count', 'CG_count'])
+        if self._has_5p_cover:
+            charge_df_cols.extend(['full_length_count', 'rt_dropoff_count'])
+        if self._has_fragments:
+            charge_df_cols.extend(['5p_tRF', 'degraded', 'pre_tRNA'])
 
-        # Find the index where count aggregation columns start
-        non_agg_cols = count_cols + ['CA_count', 'CC_count', 'GA_count', 'CG_count']
+        # Separate groupby columns from columns to aggregate
+        frag_cols = ['5p_tRF', 'degraded', 'pre_tRNA'] if self._has_fragments else []
+        cover_cols = ['full_length_count', 'rt_dropoff_count'] if self._has_5p_cover else []
+        non_agg_cols = count_cols + ['CA_count', 'CC_count', 'GA_count', 'CG_count'] + cover_cols + frag_cols
         groupby_cols = [col for col in charge_df_cols if col not in non_agg_cols]
 
         agg_dict2 = {c: "sum" for c in count_cols}
         agg_dict2.update({'CA_count': "sum", 'CC_count': "sum", 'GA_count': "sum", 'CG_count': "sum"})
+        if self._has_5p_cover:
+            agg_dict2.update({'full_length_count': "sum", 'rt_dropoff_count': "sum"})
+        if self._has_fragments:
+            agg_dict2.update({'5p_tRF': "sum", 'degraded': "sum", 'pre_tRNA': "sum"})
         charge_df = charge_df.groupby(groupby_cols, as_index=False).agg(
             agg_dict2
         ).reset_index(drop=True)
 
         # Calculate charge percentages with safe division
-        charge_df['charge_canonical'] = charge_df.apply(
-            lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'])
-            if (row['CA_count'] + row['CC_count']) > 0 else np.nan,
-            axis=1
-        )
+        # When fragment data is available, include in denominator (matches TRNA_plot)
+        if self._has_fragments:
+            ca_cc_frag = charge_df['CA_count'] + charge_df['CC_count'] + charge_df['5p_tRF'] + charge_df['degraded']
+            charge_df['charge_canonical'] = np.where(
+                ca_cc_frag > 0, 100 * charge_df['CA_count'] / ca_cc_frag, np.nan)
+            ga_cg_frag = charge_df['GA_count'] + charge_df['CG_count'] + charge_df['5p_tRF'] + charge_df['degraded']
+            charge_df['charge_non-canonical'] = np.where(
+                ga_cg_frag > 0, 100 * charge_df['GA_count'] / ga_cg_frag, np.nan)
+            charge_df['tRNA_fragment'] = np.where(
+                charge_df['count'] > 0,
+                (charge_df['5p_tRF'] + charge_df['degraded']) / charge_df['count'], np.nan)
+        else:
+            ca_cc = charge_df['CA_count'] + charge_df['CC_count']
+            charge_df['charge_canonical'] = np.where(
+                ca_cc > 0, 100 * charge_df['CA_count'] / ca_cc, np.nan)
+            ga_cg = charge_df['GA_count'] + charge_df['CG_count']
+            charge_df['charge_non-canonical'] = np.where(
+                ga_cg > 0, 100 * charge_df['GA_count'] / ga_cg, np.nan)
 
-        charge_df['charge_non-canonical'] = charge_df.apply(
-            lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'])
-            if (row['GA_count'] + row['CG_count']) > 0 else np.nan,
-            axis=1
-        )
+        # Calculate RT drop-off fraction when 5p_cover data is available
+        if self._has_5p_cover:
+            total = charge_df['full_length_count'] + charge_df['rt_dropoff_count']
+            charge_df['rt_dropoff_fraction'] = np.where(
+                total > 0,
+                charge_df['rt_dropoff_count'] / total,
+                np.nan
+            )
 
         # Add sample total count for RPM calculation
         df_count = charge_df[~charge_df['Syn_ctr']].groupby(
@@ -341,19 +388,33 @@ class ChargeQuantifier:
             'GA_count': "sum", 'CG_count': "sum",
             'RPM': "sum"
         })
+        if self._has_5p_cover:
+            base_agg.update({'full_length_count': "sum", 'rt_dropoff_count': "sum"})
+        if self._has_fragments:
+            base_agg.update({'5p_tRF': "sum", 'degraded': "sum", 'pre_tRNA': "sum"})
 
         def _recalc_charge(df):
-            """Recalculate charge percentages after aggregation."""
-            df['charge_canonical'] = df.apply(
-                lambda row: 100 * row['CA_count'] / (row['CA_count'] + row['CC_count'])
-                if (row['CA_count'] + row['CC_count']) > 0 else np.nan,
-                axis=1
-            )
-            df['charge_non-canonical'] = df.apply(
-                lambda row: 100 * row['GA_count'] / (row['GA_count'] + row['CG_count'])
-                if (row['GA_count'] + row['CG_count']) > 0 else np.nan,
-                axis=1
-            )
+            """Recalculate charge percentages and RT drop-off after aggregation."""
+            if self._has_fragments:
+                ca_cc_frag = df['CA_count'] + df['CC_count'] + df['5p_tRF'] + df['degraded']
+                df['charge_canonical'] = np.where(
+                    ca_cc_frag > 0, 100 * df['CA_count'] / ca_cc_frag, np.nan)
+                ga_cg_frag = df['GA_count'] + df['CG_count'] + df['5p_tRF'] + df['degraded']
+                df['charge_non-canonical'] = np.where(
+                    ga_cg_frag > 0, 100 * df['GA_count'] / ga_cg_frag, np.nan)
+                df['tRNA_fragment'] = np.where(
+                    df['count'] > 0, (df['5p_tRF'] + df['degraded']) / df['count'], np.nan)
+            else:
+                ca_cc = df['CA_count'] + df['CC_count']
+                df['charge_canonical'] = np.where(
+                    ca_cc > 0, 100 * df['CA_count'] / ca_cc, np.nan)
+                ga_cg = df['GA_count'] + df['CG_count']
+                df['charge_non-canonical'] = np.where(
+                    ga_cg > 0, 100 * df['GA_count'] / ga_cg, np.nan)
+            if self._has_5p_cover:
+                total = df['full_length_count'] + df['rt_dropoff_count']
+                df['rt_dropoff_fraction'] = np.where(
+                    total > 0, df['rt_dropoff_count'] / total, np.nan)
             return df
 
         # Filter by amino acid
