@@ -3,17 +3,47 @@
 ## Prerequisites
 
 1. tRNA-charge-seq repo cloned to O2
-2. Conda environment `tRNA-seq` with all dependencies
+2. Conda environment `tRNA-seq` with all dependencies (see `environment.yml`)
 3. Config YAML pointing to correct paths on O2
 
-## Usage
+## How It Works
 
-```bash
-# From the repo root:
-bash hpc/slurm/submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_concurrent]
+The pipeline uses **3 SLURM job files** chained with dependencies.
+You can either use the `submit_pipeline.sh` launcher (submits all 3 automatically)
+or submit each `.job` file manually with `sbatch`.
+
+### Job Files
+
+| File | Type | What it does | Resources |
+|------|------|-------------|-----------|
+| `stage0ab.job` | Single job | Merge reads + barcode split | 4 CPU, 16G, 1 hr |
+| `stage0c_1.job` | Array job | UMI trim + SWIPE alignment (per sample) | 4 CPU, 8G, 45 min |
+| `stage2_5.job` | Single job | Stats + charge + QC report | 16 CPU, 64G, 2 hr |
+
+All jobs log to `/home/ruv988/jobOutput/` and send email notifications
+(BEGIN, END, FAIL) to `russel_vincent@hms.harvard.edu`.
+
+### Job Chain
+
+```
+JOB0: stage0ab.job        (single job)
+  Stages 0a + 0b: Merge reads + BC split
+      │
+      ▼
+JOB1: stage0c_1.job       (array job, 0-N%32)
+  Stages 0c + 1: UMI trim + SWIPE alignment (per sample)
+      │
+      ▼
+JOB2: stage2_5.job        (single job)
+  Stages 2 + 3 + 5: Stats + Charge + QC report
 ```
 
-### Arguments
+## Option A: Automatic Submission
+
+```bash
+# From the repo root on the login node:
+bash hpc/slurm/submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_concurrent]
+```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
@@ -22,87 +52,90 @@ bash hpc/slurm/submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_c
 | `n_samples` | No | Number of samples (auto-detected from sample_list.xlsx) |
 | `max_concurrent` | No | Max concurrent array tasks (default: 32) |
 
-### Example (PJ39, 256 samples)
-
+Example (YLDC, 72 samples):
 ```bash
 bash hpc/slurm/submit_pipeline.sh \
-    /n/data/PJ39/config.yaml \
-    /n/data/PJ39/ \
-    256 \
-    32
+    /home/ruv988/projects/YLDC/config_YLDC.yaml \
+    /home/ruv988/projects/YLDC/ \
+    72 32
 ```
 
-## Job Architecture
+## Option B: Manual Submission
 
+Submit each job yourself with `sbatch`:
+
+```bash
+REPO="/home/ruv988/github_repos/tRNA-charge-seq"
+CONFIG="/home/ruv988/projects/YLDC/config_YLDC.yaml"
+PROJECT_DIR="/home/ruv988/projects/YLDC"
+
+# Step 1: Merge + BC split
+JOB0=$(sbatch --parsable "$REPO/hpc/slurm/stage0ab.job" "$CONFIG" "$PROJECT_DIR")
+echo "JOB0: $JOB0"
+
+# Step 2: Per-sample alignment (wait for JOB0)
+JOB1=$(sbatch --parsable \
+    --dependency=afterok:${JOB0} \
+    --array=0-71%32 \
+    "$REPO/hpc/slurm/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
+echo "JOB1: $JOB1"
+
+# Step 3: Aggregation (wait for all JOB1 tasks)
+JOB2=$(sbatch --parsable \
+    --dependency=afterok:${JOB1} \
+    "$REPO/hpc/slurm/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
+echo "JOB2: $JOB2"
 ```
-JOB0: stage0ab.sh         (single job)
-  Stages 0a + 0b: Merge reads + BC split
-  Resources: 4 CPU, 16G, 1 hour
-      │
-      ▼
-JOB1: stage0c_1.sh        (array job, 0-N%32)
-  Stages 0c + 1: UMI trim + SWIPE alignment (per sample)
-  Resources: 4 CPU, 8G, 45 min per task
-      │
-      ▼
-JOB2: stage2_5.sh         (single job)
-  Stages 2 + 3 + 5: Stats + Charge + QC report
-  Resources: 16 CPU, 64G, 2 hours
-```
 
-The `%32` throttle means at most 32 samples run simultaneously.
-Adjust with the 4th argument if your admin prefers fewer concurrent jobs.
+## Estimated Runtimes
 
-## Estimated Runtime (256 samples)
-
-| Stage | Time | Notes |
-|-------|------|-------|
-| 0a+0b (JOB0) | ~35 min | Depends on number of input file pairs |
-| 0c+1 (JOB1) | ~45 min | Wall time per task; all run in parallel |
-| 2+3+5 (JOB2) | ~35 min | Sequential aggregation |
-| **Total** | **~2 hours** | vs ~10 hours monolithic |
+| Dataset | 0a+0b | 0c+1 (wall) | 2+3+5 | Total |
+|---------|-------|-------------|-------|-------|
+| 24 samples | ~15 min | ~5 min | ~10 min | **~30 min** |
+| 72 samples | ~25 min | ~10 min | ~15 min | **~50 min** |
+| 256 samples | ~35 min | ~45 min | ~35 min | **~2 hours** |
 
 ## Monitoring
 
 ```bash
-# Check job status
+# Check job queue
 squeue -u $USER
 
 # Detailed job info
-sacct -j <JOB0_ID>,<JOB1_ID>,<JOB2_ID> --format=JobID,State,Elapsed,MaxRSS
+sacct -j <JOB0>,<JOB1>,<JOB2> --format=JobID,JobName,State,Elapsed,MaxRSS
 
-# Watch logs in real time
-tail -f /path/to/PJ39/logs/*.out
+# Watch logs
+tail -f /home/ruv988/jobOutput/tseq-*.out
 
 # Check for failed array tasks
-sacct -j <JOB1_ID> --format=JobID,State,ExitCode | grep -v COMPLETED
+sacct -j <JOB1> --format=JobID,State,ExitCode | grep -v COMPLETED
 ```
 
 ## Re-running Failed Tasks
 
-If some array tasks fail (e.g., task 42 and 107):
+If some array tasks fail (e.g., tasks 5 and 12):
 
 ```bash
 # Re-run specific samples only
-sbatch --array=42,107 hpc/slurm/stage0c_1.sh config.yaml /path/to/PJ39/
+sbatch --array=5,12 hpc/slurm/stage0c_1.job $CONFIG $PROJECT_DIR
 
 # Then re-run aggregation
-sbatch hpc/slurm/stage2_5.sh config.yaml /path/to/PJ39/
+sbatch hpc/slurm/stage2_5.job $CONFIG $PROJECT_DIR
 ```
 
 ## Resource Tuning
 
-If jobs are getting killed (OOM) or timing out:
+If jobs are getting OOM-killed or timing out, override defaults on the command line:
 
 ```bash
-# Increase memory for alignment-heavy samples:
-sbatch --mem=16G --array=0-255%32 hpc/slurm/stage0c_1.sh ...
+# More memory for alignment-heavy samples
+sbatch --mem=16G --array=0-71%32 hpc/slurm/stage0c_1.job ...
 
-# Increase time for large reference databases:
-sbatch --time=01:30:00 --array=0-255%32 hpc/slurm/stage0c_1.sh ...
+# More time
+sbatch -t 01:30:00 --array=0-71%32 hpc/slurm/stage0c_1.job ...
 
-# Reduce concurrent tasks if admin requests:
-sbatch --array=0-255%16 hpc/slurm/stage0c_1.sh ...
+# Fewer concurrent tasks
+sbatch --array=0-71%16 hpc/slurm/stage0c_1.job ...
 ```
 
 ## Outputs
@@ -111,16 +144,16 @@ After completion, find results in `project_dir/`:
 
 ```
 project_dir/
-├── data/
-│   ├── AdapterRemoval/    # Merged reads
-│   ├── BC_split/          # Barcode-split FASTQs + read_length_distributions.csv
-│   ├── UMI_trimmed/       # UMI-trimmed reads
-│   ├── SWalign/           # Alignment JSONs
-│   └── stats_collection/  # Per-sample + aggregate stats CSVs
-├── charge_analysis/       # charge_df_{aa,codon,transcript}.csv
-├── QC_summary.csv         # One row per sample, all metrics
-├── QC_report.html         # Interactive Plotly dashboard
-├── sample_df.xlsx         # Updated sample metadata
-├── logs/                  # SLURM job logs
-└── preprocessing.log      # Pipeline log
+├── ALL_stats_aggregate.csv   # All tRNA counts per sample
+├── QC_report.html            # Interactive Plotly dashboard
+├── QC_summary.csv            # One row per sample, all metrics
+├── charge_analysis/          # charge_df_{aa,codon,transcript}.csv
+├── sample_df.xlsx            # Updated sample metadata
+├── preprocessing.log         # Pipeline log
+└── data/
+    ├── AdapterRemoval/       # Merged reads
+    ├── BC_split/             # Barcode-split FASTQs
+    ├── UMI_trimmed/          # UMI-trimmed reads
+    ├── SWalign/              # Alignment JSONs
+    └── stats_collection/     # Per-sample + aggregate stats
 ```

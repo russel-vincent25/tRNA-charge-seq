@@ -1,16 +1,18 @@
 #!/bin/bash
-#SBATCH --partition=short
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=01:00:00
-# ==============================================================================
+
 # Stage 0a (Adapter Removal + Merging) + Stage 0b (Barcode Splitting)
-#
 # Processes ALL input file pairs — not per-sample.
 # Typically fast: ~5 min for 8 samples, ~35 min for 256 samples.
-#
-# Resources: 4 CPU, 16G RAM, 1 hour
-# ==============================================================================
+
+#SBATCH --cpus-per-task=4
+#SBATCH -p short
+#SBATCH -t 01:00:00
+#SBATCH --mem=16G
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=russel_vincent@hms.harvard.edu
+#SBATCH --job-name=tseq-0ab
+#SBATCH -o /home/ruv988/jobOutput/tseq-0ab_%j.out
+#SBATCH -e /home/ruv988/jobOutput/tseq-0ab_%j.err
 
 set -euo pipefail
 
@@ -25,16 +27,20 @@ echo "CPUs:    ${SLURM_CPUS_PER_TASK:-4}"
 echo "Start:   $(date)"
 echo ""
 
-# Activate conda environment
-# On HMS O2: module load conda, then activate
-module load conda 2>/dev/null || true
-source activate tRNA-seq 2>/dev/null || conda activate tRNA-seq
+# Load modules and activate conda environment
+module load conda/miniforge3/24.11.3-0
+conda activate tRNA-seq
 
 python -m trnaseq pipeline \
     --config "$CONFIG" \
     --project-dir "$PROJECT_DIR" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-4}" \
     --stages 0a,0b
+
+if [ $? -ne 0 ]; then
+    echo "Error: Stages 0a+0b failed" >&2
+    exit 1
+fi
 
 echo ""
 echo "Done: $(date)"

@@ -1,17 +1,18 @@
 #!/bin/bash
-#SBATCH --partition=short
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
-#SBATCH --time=00:45:00
-# ==============================================================================
+
 # Stage 0c (UMI Trimming) + Stage 1 (SWIPE Alignment) — per sample
-#
 # Uses SLURM_ARRAY_TASK_ID as --sample-index.
 # Each array task processes ONE sample independently.
-#
-# Resources: 4 CPU, 8G RAM, 45 min per sample
-# Bottleneck stage: SWIPE alignment (~2-3 min/sample with 4 CPUs)
-# ==============================================================================
+
+#SBATCH --cpus-per-task=4
+#SBATCH -p short
+#SBATCH -t 00:45:00
+#SBATCH --mem=8G
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=russel_vincent@hms.harvard.edu
+#SBATCH --job-name=tseq-0c1
+#SBATCH -o /home/ruv988/jobOutput/tseq-0c1_%A_%a.out
+#SBATCH -e /home/ruv988/jobOutput/tseq-0c1_%A_%a.err
 
 set -euo pipefail
 
@@ -27,9 +28,9 @@ echo "CPUs:    ${SLURM_CPUS_PER_TASK:-4}"
 echo "Start:   $(date)"
 echo ""
 
-# Activate conda environment
-module load conda 2>/dev/null || true
-source activate tRNA-seq 2>/dev/null || conda activate tRNA-seq
+# Load modules and activate conda environment
+module load conda/miniforge3/24.11.3-0
+conda activate tRNA-seq
 
 python -m trnaseq pipeline \
     --config "$CONFIG" \
@@ -37,6 +38,11 @@ python -m trnaseq pipeline \
     --n-jobs "${SLURM_CPUS_PER_TASK:-4}" \
     --stages 0c,1 \
     --sample-index "$SAMPLE_IDX"
+
+if [ $? -ne 0 ]; then
+    echo "Error: Stages 0c+1 failed for sample ${SAMPLE_IDX}" >&2
+    exit 1
+fi
 
 echo ""
 echo "Done: $(date)"
