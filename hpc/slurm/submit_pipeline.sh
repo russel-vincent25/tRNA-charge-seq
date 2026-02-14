@@ -64,6 +64,29 @@ MAX_ARRAY_IDX=$((N_SAMPLES - 1))
 # --- Ensure jobOutput directory exists ---
 mkdir -p /home/ruv988/jobOutput
 
+# --- Resource scaling based on N_SAMPLES ---
+THREADS_PER_JOB=2
+
+# Stage 0ab: process all file pairs; scale CPUs with sample count, cap at 16
+CPUS_0AB=$(( N_SAMPLES < 16 ? (N_SAMPLES > 2 ? N_SAMPLES : 2) : 16 ))
+N_JOBS_0AB=$(( CPUS_0AB / THREADS_PER_JOB ))
+# ~3 min per file pair at full parallelism, minimum 1h, cap 12h
+TIME_0AB_MIN=$(( (N_SAMPLES / N_JOBS_0AB + 1) * 3 ))
+if [ $TIME_0AB_MIN -lt 60 ]; then TIME_0AB_MIN=60; fi
+if [ $TIME_0AB_MIN -gt 720 ]; then TIME_0AB_MIN=720; fi
+TIME_0AB=$(printf "%02d:%02d:00" $((TIME_0AB_MIN / 60)) $((TIME_0AB_MIN % 60)))
+MEM_0AB="$(( CPUS_0AB * 2 ))G"
+
+# Stage 0c+1: per-sample array; SWIPE gets all CPUs as threads
+CPUS_0C1=4
+TIME_0C1="00:45:00"
+MEM_0C1="8G"
+
+# Stage 2+3+5: aggregation scales with sample count
+CPUS_235=$(( N_SAMPLES < 16 ? (N_SAMPLES > 4 ? N_SAMPLES : 4) : 16 ))
+if [ $N_SAMPLES -lt 256 ]; then MEM_235="32G"; else MEM_235="64G"; fi
+TIME_235="02:00:00"
+
 echo "=============================================================="
 echo "tRNA-charge-seq SLURM Pipeline"
 echo "=============================================================="
@@ -71,13 +94,20 @@ echo "Config:         $CONFIG"
 echo "Project dir:    $PROJECT_DIR"
 echo "Samples:        $N_SAMPLES"
 echo "Max concurrent: $MAX_CONCURRENT"
+echo "Threads/job:    $THREADS_PER_JOB"
 echo "Job logs:       /home/ruv988/jobOutput/tseq-*"
+echo ""
+echo "Resource plan:"
+echo "  Stage 0ab:  ${CPUS_0AB} CPUs, ${MEM_0AB} mem, ${TIME_0AB} time (${N_JOBS_0AB} jobs × ${THREADS_PER_JOB} threads)"
+echo "  Stage 0c+1: ${CPUS_0C1} CPUs, ${MEM_0C1} mem, ${TIME_0C1} time (1 job × ${CPUS_0C1} threads) × ${N_SAMPLES} tasks"
+echo "  Stage 2+3+5: ${CPUS_235} CPUs, ${MEM_235} mem, ${TIME_235} time"
 echo "=============================================================="
 
 # --- Job 0: Stages 0a + 0b (merge + BC split) ---
 # Single job, processes all input file pairs
 JOB0=$(sbatch --parsable \
-    "${SCRIPT_DIR}/stage0ab.job" "$CONFIG" "$PROJECT_DIR")
+    --cpus-per-task=$CPUS_0AB --mem=${MEM_0AB} -t ${TIME_0AB} \
+    "${SCRIPT_DIR}/stage0ab.job" "$CONFIG" "$PROJECT_DIR" "$THREADS_PER_JOB")
 echo "  JOB0 (stages 0a+0b):  $JOB0"
 
 # --- Job 1: Stages 0c + 1 per sample (array with throttle) ---
@@ -85,6 +115,7 @@ echo "  JOB0 (stages 0a+0b):  $JOB0"
 JOB1=$(sbatch --parsable \
     --dependency=afterok:${JOB0} \
     --array=0-${MAX_ARRAY_IDX}%${MAX_CONCURRENT} \
+    --cpus-per-task=$CPUS_0C1 --mem=${MEM_0C1} -t ${TIME_0C1} \
     "${SCRIPT_DIR}/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
 echo "  JOB1 (stages 0c+1):   $JOB1  [array 0-${MAX_ARRAY_IDX}%${MAX_CONCURRENT}]"
 
@@ -92,6 +123,7 @@ echo "  JOB1 (stages 0c+1):   $JOB1  [array 0-${MAX_ARRAY_IDX}%${MAX_CONCURRENT}
 # Single job: stats collection + charge quantification + QC report
 JOB2=$(sbatch --parsable \
     --dependency=afterok:${JOB1} \
+    --cpus-per-task=$CPUS_235 --mem=${MEM_235} -t ${TIME_235} \
     "${SCRIPT_DIR}/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
 echo "  JOB2 (stages 2+3+5):  $JOB2"
 

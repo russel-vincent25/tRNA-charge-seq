@@ -89,7 +89,8 @@ class PreprocessingPipeline:
     Runs stages 0a-5 and outputs key files for downstream analysis.
     """
 
-    def __init__(self, config_file, project_dir, n_jobs=4, sample_index=None):
+    def __init__(self, config_file, project_dir, n_jobs=4, sample_index=None,
+                 threads_per_job=None):
         """
         Initialize pipeline
 
@@ -98,6 +99,7 @@ class PreprocessingPipeline:
             project_dir: Project directory (must contain data/{seq_dir}/ for stages 0-1)
             n_jobs: Number of parallel jobs
             sample_index: Process only sample at this 0-based index (for SLURM array jobs)
+            threads_per_job: Threads per subprocess (AR/SWIPE). Default: from config or 2.
         """
         self.config_file = Path(config_file).resolve()
         self.project_dir = Path(project_dir).resolve()
@@ -114,6 +116,12 @@ class PreprocessingPipeline:
 
         # Resolve relative paths in config against project_dir
         self._resolve_config_paths()
+
+        # Resolve threads_per_job: CLI arg > config > default 2
+        if threads_per_job is not None:
+            self.threads_per_job = threads_per_job
+        else:
+            self.threads_per_job = self.config.get('threads_per_job', 2)
 
         # Initialize status tracking
         self.status = {
@@ -221,6 +229,7 @@ class PreprocessingPipeline:
         # Run AdapterRemoval
         AR_obj = AR_merge(
             self.dir_dict, self.inp_file_df, MIN_READ_LEN,
+            AR_threads=self.threads_per_job,
             overwrite_dir=self.config.get('overwrite', True)
         )
         self.inp_file_df = AR_obj.run_parallel(
@@ -324,6 +333,7 @@ class PreprocessingPipeline:
             min_score_align=MIN_SCORE_ALIGN,
             common_seqs=common_seqs,
             overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
+            SWIPE_threads=self.threads_per_job,
         )
         result_df = align_obj.run_parallel(n_jobs=self.n_jobs)
         if self.sample_index is not None:
@@ -737,6 +747,8 @@ class PreprocessingPipeline:
             self.log(f"Configuration: {self.config_file}")
             self.log(f"Project directory: {self.project_dir}")
             self.log(f"Parallel jobs: {self.n_jobs}")
+            self.log(f"CPU budget: {self.n_jobs} jobs × {self.threads_per_job} threads = "
+                     f"{self.n_jobs * self.threads_per_job} cores")
             self.log(f"Stages to run: {', '.join(sorted(stages))}")
 
             if self.sample_index is not None:
@@ -874,6 +886,11 @@ def main():
         '--sample-index', type=int, default=None,
         help='Process only sample at this 0-based index (for SLURM array jobs)'
     )
+    parser.add_argument(
+        '--threads-per-job', type=int, default=None,
+        help='Threads per subprocess (AdapterRemoval/SWIPE). '
+             'Default: config threads_per_job or 2'
+    )
 
     args = parser.parse_args()
 
@@ -891,6 +908,7 @@ def main():
         project_dir=project_dir,
         n_jobs=args.n_jobs,
         sample_index=args.sample_index,
+        threads_per_job=args.threads_per_job,
     )
 
     # Override config with CLI arguments

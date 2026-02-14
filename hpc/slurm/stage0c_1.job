@@ -20,11 +20,13 @@ CONFIG="$1"
 PROJECT_DIR="$2"
 SAMPLE_IDX="${SLURM_ARRAY_TASK_ID}"
 
+CPUS="${SLURM_CPUS_PER_TASK:-4}"
+
 echo "=== tRNA-charge-seq: Stage 0c + 1 (sample ${SAMPLE_IDX}) ==="
 echo "Config:  $CONFIG"
 echo "Project: $PROJECT_DIR"
 echo "Node:    $(hostname)"
-echo "CPUs:    ${SLURM_CPUS_PER_TASK:-4}"
+echo "CPUs:    $CPUS  (1 job × ${CPUS} threads for SWIPE)"
 echo "Start:   $(date)"
 echo ""
 
@@ -32,10 +34,12 @@ echo ""
 module load conda/miniforge3/24.11.3-0
 conda activate tRNA-seq
 
+# Single sample: 1 job with all CPUs as threads for SWIPE alignment
 python -m trnaseq pipeline \
     --config "$CONFIG" \
     --project-dir "$PROJECT_DIR" \
-    --n-jobs "${SLURM_CPUS_PER_TASK:-4}" \
+    --n-jobs 1 \
+    --threads-per-job "$CPUS" \
     --stages 0c,1 \
     --sample-index "$SAMPLE_IDX"
 

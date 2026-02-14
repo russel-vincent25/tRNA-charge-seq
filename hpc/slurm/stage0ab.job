@@ -18,12 +18,18 @@ set -euo pipefail
 
 CONFIG="$1"
 PROJECT_DIR="$2"
+THREADS_PER_JOB="${3:-2}"
+
+CPUS="${SLURM_CPUS_PER_TASK:-4}"
+N_JOBS=$(( CPUS / THREADS_PER_JOB ))
+# Ensure at least 1 job
+N_JOBS=$(( N_JOBS > 0 ? N_JOBS : 1 ))
 
 echo "=== tRNA-charge-seq: Stage 0a + 0b ==="
 echo "Config:  $CONFIG"
 echo "Project: $PROJECT_DIR"
 echo "Node:    $(hostname)"
-echo "CPUs:    ${SLURM_CPUS_PER_TASK:-4}"
+echo "CPUs:    $CPUS  (${N_JOBS} jobs × ${THREADS_PER_JOB} threads)"
 echo "Start:   $(date)"
 echo ""
 
@@ -34,7 +40,8 @@ conda activate tRNA-seq
 python -m trnaseq pipeline \
     --config "$CONFIG" \
     --project-dir "$PROJECT_DIR" \
-    --n-jobs "${SLURM_CPUS_PER_TASK:-4}" \
+    --n-jobs "$N_JOBS" \
+    --threads-per-job "$THREADS_PER_JOB" \
     --stages 0a,0b
 
 if [ $? -ne 0 ]; then
