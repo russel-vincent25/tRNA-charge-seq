@@ -22,36 +22,34 @@ plans/
 # Claude Code local config
 .claude/
 
-# Data folder (to big for Github)
+# Data folder (too big for Github)
 /projects/**/*.fasta
 /projects/**/*.fa
 /projects/**/*.fastq
 /projects/**/*.bz2
 /projects/**/data
 
+# Pipeline output (regenerable artifacts)
+/projects/**/ALL_stats_aggregate.csv
+/projects/**/QC_report.html
+/projects/**/QC_summary.csv
+/projects/**/charge_df_*.csv
+/projects/**/charge_analysis
+/projects/**/abundance_results
+/projects/**/parquet_data
+/projects/**/qc_reports
+/projects/**/preprocessing.log
+/projects/**/CurrentStatus.log
+/projects/**/inp_file_df.xlsx
+/projects/**/sample_df.xlsx
 
-# Simulation stuff:
+# CLI script test project (local reference only)
+/projects/example_script_test/
+
+# Simulation stuff
 utils/code-of-limited-use/sim_data/*
 /sim/**/data
 /sim/**/sim_data
 
-# In example folder only push the raw_fastq folder
-# and some plotting folder to the repo:
-/example/data/AdapterRemoval*
-/example/data/BC_split*
-/example/data/raw_fastq_*
-/example/data/stats_collection*
-/example/data/SWalign*
-/example/data/transcript_mutations/tRNA_database*
-/example/data/UMI_trimmed*
-
-
-
 # Data from collaborations
 /collab
-
-
-
-
-
-
