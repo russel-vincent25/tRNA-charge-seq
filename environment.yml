@@ -17,6 +17,7 @@ dependencies:
   - matplotlib>=3.7.0
   - seaborn==0.13.0             # Issue #1: Requires scipy <1.15.0
   - logomaker>=0.8
+  - plotly>=5.18                # Interactive QC dashboard (Stage 5)
 
   # Jupyter environment
   - jupyterlab>=4.0
@@ -57,8 +58,7 @@ dependencies:
   - pytest                      # Testing framework
 
 pip:
-  # Any packages not available via conda can be listed here
-  # Currently all dependencies available via conda
+  - pydeseq2>=0.4               # Differential abundance analysis (optional)
 
 # Installation instructions:
 #
