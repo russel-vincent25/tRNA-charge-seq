@@ -770,9 +770,27 @@ class PreprocessingPipeline:
             # Setup directories
             self.setup_directories()
 
-            # Load sample info if running early stages
-            if stages.intersection({'0a', '0b', '0c', '1'}):
+            # Load sample info for early stages
+            if stages.intersection({'0a', '0b'}):
+                # Stages 0a/0b: load fresh from config (sample list Excel)
                 self.load_sample_info()
+            elif stages.intersection({'0c', '1'}):
+                # Stages 0c/1 without 0a/0b: need sample_df with N_total from 0b
+                sample_df_path = self.project_dir / 'sample_df.xlsx'
+                if sample_df_path.exists():
+                    self.log(f"Loading existing sample_df from {sample_df_path}")
+                    self.sample_df = pd.read_excel(sample_df_path)
+                    inp_file_path = self.project_dir / 'inp_file_df.xlsx'
+                    if inp_file_path.exists():
+                        self.inp_file_df = pd.read_excel(inp_file_path)
+                    else:
+                        self.inp_file_df = pd.DataFrame()
+                    self.log(f"Loaded {len(self.sample_df)} samples")
+                    self.log(f"Input files: {len(self.inp_file_df)}")
+                else:
+                    self.log("WARNING: No sample_df.xlsx found — loading from config. "
+                             "Stage 0c may fail if N_total column is missing.", level="WARN")
+                    self.load_sample_info()
 
             # Load prerequisites for later stages when skipping early ones
             self._load_prerequisites(stages)
