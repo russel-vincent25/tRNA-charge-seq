@@ -79,13 +79,13 @@ MEM_0AB="$(( CPUS_0AB * 2 ))G"
 
 # Stage 0c+1: per-sample array; SWIPE gets all CPUs as threads
 CPUS_0C1=4
-TIME_0C1="00:45:00"
+TIME_0C1="12:00:00"
 MEM_0C1="8G"
 
 # Stage 2+3+5: aggregation scales with sample count
 CPUS_235=$(( N_SAMPLES < 16 ? (N_SAMPLES > 4 ? N_SAMPLES : 4) : 16 ))
 if [ $N_SAMPLES -lt 256 ]; then MEM_235="32G"; else MEM_235="64G"; fi
-TIME_235="02:00:00"
+TIME_235="12:00:00"
 
 echo "=============================================================="
 echo "tRNA-charge-seq SLURM Pipeline"

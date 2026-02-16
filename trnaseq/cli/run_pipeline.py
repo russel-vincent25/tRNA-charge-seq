@@ -34,6 +34,8 @@ Date: 2026-02-11
 
 import os
 import sys
+import time
+import json
 from pathlib import Path
 from datetime import datetime
 import argparse
@@ -128,6 +130,10 @@ class PreprocessingPipeline:
             'start_time': datetime.now(),
             'stages_completed': []
         }
+
+        # Computing metrics
+        self.stage_timings = {}
+        self.file_metrics = {}
 
     def _resolve_config_paths(self):
         """Resolve relative paths in config against project_dir.
@@ -609,6 +615,91 @@ class PreprocessingPipeline:
             import traceback
             self.log(traceback.format_exc(), level="ERROR")
 
+    def _file_size_mb(self, path):
+        """Return file size in MB, or None if file doesn't exist."""
+        p = Path(path)
+        if p.exists():
+            return round(p.stat().st_size / (1024 * 1024), 3)
+        return None
+
+    def _collect_file_metrics(self):
+        """Collect per-sample file sizes from pipeline output directories."""
+        data_dir = self.project_dir / 'data'
+        samples = self.sample_df['sample_name_unique'].tolist()
+
+        for sample in samples:
+            self.file_metrics[sample] = {
+                'bc_split_fastq_MB': self._file_size_mb(
+                    data_dir / 'BC_split' / f'{sample}.fastq.bz2'),
+                'umi_trimmed_fastq_MB': self._file_size_mb(
+                    data_dir / 'UMI_trimmed' / f'{sample}_UMI-trimmed.fastq.bz2'),
+                'alignment_json_MB': self._file_size_mb(
+                    data_dir / 'SWalign' / f'{sample}_SWalign.json.bz2'),
+                'per_read_stats_MB': self._file_size_mb(
+                    data_dir / 'stats_collection' / f'{sample}_stats.csv.bz2'),
+            }
+
+    def _save_metrics(self):
+        """Save computing_metrics.csv (or per-sample JSON in single-sample mode)."""
+        if self.sample_index is not None:
+            # Single-sample SLURM mode: save per-sample JSON
+            metrics_dir = self.project_dir / 'data' / 'metrics'
+            metrics_dir.mkdir(exist_ok=True)
+
+            sample_name = self.sample_df.iloc[self.sample_index]['sample_name_unique']
+            sample_metrics = {
+                'sample_name_unique': sample_name,
+                **self.file_metrics.get(sample_name, {}),
+                **{f'{k}_sec': round(v, 2) for k, v in self.stage_timings.items()},
+            }
+
+            out_path = metrics_dir / f'{sample_name}_metrics.json'
+            with open(out_path, 'w') as f:
+                json.dump(sample_metrics, f, indent=2)
+            self.log(f"  Saved per-sample metrics: {out_path}")
+        else:
+            # Full pipeline or aggregation mode: save CSV
+            self._aggregate_metrics_csv()
+
+    def _aggregate_metrics_csv(self):
+        """Aggregate per-sample JSONs (if any) and pipeline metrics into CSV."""
+        metrics_dir = self.project_dir / 'data' / 'metrics'
+        rows = []
+
+        # Try loading per-sample JSONs from SLURM array jobs
+        if metrics_dir.exists():
+            for json_file in sorted(metrics_dir.glob('*_metrics.json')):
+                with open(json_file) as f:
+                    rows.append(json.load(f))
+
+        if rows:
+            # Merge with any file metrics collected in this run
+            df = pd.DataFrame(rows)
+        else:
+            # No per-sample JSONs — build from current run's data
+            self._collect_file_metrics()
+            samples = self.sample_df['sample_name_unique'].tolist()
+            for sample in samples:
+                row = {'sample_name_unique': sample}
+                row.update(self.file_metrics.get(sample, {}))
+                rows.append(row)
+            df = pd.DataFrame(rows)
+
+        # Add pipeline-level timings as columns (same value for all rows)
+        for stage, duration in self.stage_timings.items():
+            col = f'{stage}_sec'
+            if col not in df.columns:
+                df[col] = round(duration, 2)
+
+        # Add aggregate stats file size
+        agg_stats = self.project_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
+        if agg_stats.exists():
+            df['aggregate_stats_MB'] = self._file_size_mb(agg_stats)
+
+        out_path = self.project_dir / 'computing_metrics.csv'
+        df.to_csv(out_path, index=False)
+        self.log(f"  Saved computing metrics: {out_path} ({len(df)} samples)")
+
     def save_outputs(self):
         """Save output files"""
         self.log("=" * 60)
@@ -797,38 +888,62 @@ class PreprocessingPipeline:
 
             # Run preprocessing stages (0-2)
             if '0a' in stages:
+                t0 = time.time()
                 self.stage_0a_adapter_removal()
+                self.stage_timings['stage_0a'] = time.time() - t0
             if '0b' in stages:
+                t0 = time.time()
                 self.stage_0b_barcode_split()
+                self.stage_timings['stage_0b'] = time.time() - t0
             if '0c' in stages:
+                t0 = time.time()
                 self.stage_0c_umi_trim()
+                self.stage_timings['stage_0c'] = time.time() - t0
             if '1' in stages:
+                t0 = time.time()
                 self.stage_1_alignment()
+                self.stage_timings['stage_1'] = time.time() - t0
             if '2' in stages:
+                t0 = time.time()
                 self.stage_2_stats_collection()
+                self.stage_timings['stage_2'] = time.time() - t0
 
             # Run analysis stages (3-5)
             if '3' in stages:
                 if self.config.get('run_charge_quantification', True):
+                    t0 = time.time()
                     self.stage_3_charge_quantification()
+                    self.stage_timings['stage_3'] = time.time() - t0
                 else:
                     self.log("Skipping Stage 3: Charge Quantification (disabled in config)")
 
             if '4' in stages:
                 if self.config.get('run_parquet_storage', False):
+                    t0 = time.time()
                     self.stage_4_parquet_storage()
+                    self.stage_timings['stage_4'] = time.time() - t0
                 else:
                     self.log("Skipping Stage 4: Parquet Storage (disabled in config)")
 
             if '5' in stages:
                 if self.config.get('run_qc_report', True):
+                    t0 = time.time()
                     self.stage_5_qc_report()
+                    self.stage_timings['stage_5'] = time.time() - t0
                 else:
                     self.log("Skipping Stage 5: QC Report (disabled in config)")
+
+            # Collect file metrics and save
+            if self.sample_index is not None:
+                self._collect_file_metrics()
+                self._save_metrics()
+            else:
+                self._collect_file_metrics()
 
             # Save outputs (skip in single-sample mode)
             if self.sample_index is None:
                 self.save_outputs()
+                self._save_metrics()
             else:
                 self.log("Skipping save_outputs in single-sample mode")
 
@@ -841,6 +956,11 @@ class PreprocessingPipeline:
             self.log("=" * 60)
             self.log(f"Duration: {duration}")
             self.log(f"Stages completed: {', '.join(self.status['stages_completed'])}")
+            if self.stage_timings:
+                self.log(f"Stage timings:")
+                for stage, secs in sorted(self.stage_timings.items()):
+                    m, s = divmod(int(secs), 60)
+                    self.log(f"  {stage}: {m}m {s}s")
             self.log(f"Output files:")
             self.log(f"  - inp_file_df.xlsx")
             self.log(f"  - sample_df.xlsx")
@@ -857,6 +977,7 @@ class PreprocessingPipeline:
                 self.log(f"  - QC_summary.csv")
                 self.log(f"  - QC_report.html")
 
+            self.log(f"  - computing_metrics.csv")
             self.log("")
             if '3' not in self.status['stages_completed']:
                 self.log("Next step: Run charge quantification (Stage 3)")
