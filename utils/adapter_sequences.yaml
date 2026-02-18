@@ -1,0 +1,4 @@
+# 5-prime adapter constant sequences for anchored UMI trimming
+# Each entry maps a name to the constant sequence that follows the random stagger.
+# Reference these names in your pipeline config via the 'umi_anchor' field.
+GCv4: "AGTCACGATC"

@@ -32,6 +32,17 @@ min_score_align: 15  # Minimum SWIPE alignment score
 gap_penalty: 6
 extension_penalty: 3
 
+# UMI Trimming
+# ------------
+# Mode: 'anchored' (default) uses a constant anchor sequence after variable stagger.
+#        'pyrimidine' (legacy) checks the last nt of a fixed-length UMI is T/C.
+umi_trim_mode: "pyrimidine"
+# Anchored mode settings (only used when umi_trim_mode: "anchored"):
+# adapter_sequences: "utils/adapter_sequences.yaml"
+# umi_anchor: "GCv4"
+# umi_max_stagger: 3
+# umi_anchor_max_dist: 1
+
 # Downsampling (optional)
 # -----------------------
 # Use one of these options, or set both to null for no downsampling

@@ -122,6 +122,99 @@ class AR_merge:
         self.inp_file_df['percent_successfully_merged'] = self.inp_file_df['N_merged'].values / self.inp_file_df['N_pairs'].values *100
         self.inp_file_df.to_excel('merge_stats.xlsx')
 
+    def qc_probe(self, barcodes, umi_mode='anchored', anchor_seq=None,
+                 max_stagger=3, anchor_max_dist=1, umi_len=10,
+                 umi_end={'T', 'C'}, n_reads=10000):
+        """
+        Lightweight QC probe run on merged reads to check UMI and barcode
+        detectability *before* committing to full BC_split / UMI_trim stages.
+
+        Parameters:
+            barcodes: list of barcode sequences to look for at 3' end
+            umi_mode: 'anchored' or 'pyrimidine'
+            anchor_seq: constant anchor sequence (required when umi_mode='anchored')
+            max_stagger: max random nt before anchor (anchored mode)
+            anchor_max_dist: hamming tolerance for anchor match
+            umi_len: UMI length (pyrimidine mode)
+            umi_end: set of valid last-nt for UMI (pyrimidine mode)
+            n_reads: number of reads to subsample per file pair
+
+        Returns:
+            dict mapping basename -> {n_probed, pct_umi, pct_bc, pct_both,
+                                      stagger_counts (anchored mode only)}
+        """
+        results = {}
+        anchor_len = len(anchor_seq) if anchor_seq else 0
+
+        for _, row in self.inp_file_df.iterrows():
+            basename = '-'.join(re.split('[_/]', row['fastq_mate1_filename'])[:-1])
+            merged_fn = '{}/{}.collapsed.bz2'.format(self.AdapterRemoval_dir_abs, basename)
+            if not os.path.exists(merged_fn):
+                continue
+
+            n_probed = 0
+            n_umi = 0
+            n_bc = 0
+            n_both = 0
+            stagger_counts = Counter()
+
+            with bz2.open(merged_fn, "rt") as fh:
+                for title, seq, qual in FastqGeneralIterator(fh):
+                    if n_probed >= n_reads:
+                        break
+                    n_probed += 1
+
+                    # --- 5' UMI check ---
+                    has_umi = False
+                    if umi_mode == 'anchored' and anchor_seq:
+                        for stagger in range(max_stagger + 1):
+                            if stagger + anchor_len > len(seq):
+                                break
+                            candidate = seq[stagger:stagger + anchor_len]
+                            if jellyfish.hamming_distance(candidate, anchor_seq) <= anchor_max_dist:
+                                has_umi = True
+                                stagger_counts[stagger] += 1
+                                break
+                    elif umi_mode == 'pyrimidine':
+                        if len(seq) >= umi_len and seq[umi_len - 1] in umi_end:
+                            has_umi = True
+
+                    # --- 3' barcode check ---
+                    has_bc = False
+                    for bc in barcodes:
+                        bc_len = len(bc)
+                        if bc_len > len(seq):
+                            continue
+                        tail = seq[-bc_len:]
+                        if 'N' in bc:
+                            mismatches = sum(a != b for a, b in zip(tail, bc) if b != 'N')
+                            if mismatches <= 1:
+                                has_bc = True
+                                break
+                        else:
+                            if jellyfish.hamming_distance(tail, bc) <= 1:
+                                has_bc = True
+                                break
+
+                    if has_umi:
+                        n_umi += 1
+                    if has_bc:
+                        n_bc += 1
+                    if has_umi and has_bc:
+                        n_both += 1
+
+            result = {
+                'n_probed': n_probed,
+                'pct_umi': round(n_umi / n_probed * 100, 1) if n_probed else 0,
+                'pct_bc': round(n_bc / n_probed * 100, 1) if n_probed else 0,
+                'pct_both': round(n_both / n_probed * 100, 1) if n_probed else 0,
+            }
+            if umi_mode == 'anchored':
+                result['stagger_counts'] = dict(stagger_counts)
+            results[basename] = result
+
+        return results
+
 
 
 class BC_split:
@@ -556,28 +649,51 @@ class UMI_trim:
     add it to the fasta header and generate statistics
     on the UMI use.
     After trimming it is possible to downsample the number
-    of reads such 
+    of reads such that all samples have the same number of reads.
+
+    Supports two trimming modes:
+    - 'pyrimidine': Legacy mode. Takes first UMI_len nt, checks last nt is T/C.
+    - 'anchored': Finds a constant anchor sequence after a variable-length stagger (0..max_stagger nt).
+      The full prefix (stagger + anchor) is used as the UMI for deduplication.
 
     Keyword arguments:
-    UMI_end -- Set of nucleotides posible on the last UMI position (default {'T', 'C'})
+    mode -- Trimming mode: 'anchored' or 'pyrimidine' (default 'anchored')
+    anchor_seq -- Constant sequence to search for in anchored mode (required when mode='anchored')
+    max_stagger -- Maximum random nt before the anchor sequence (default 3)
+    anchor_max_dist -- Hamming distance tolerance for anchor matching (default 1)
+    UMI_end -- Set of nucleotides possible on the last UMI position, pyrimidine mode only (default {'T', 'C'})
     overwrite_dir -- Overwrite previous UMI trim folder (default False)
     check_input -- Check if input files exist (default True)
-    UMI_len -- UMI length (default 10)
-    UMI_bins -- Number of possible UMIs (default 4^9 x 2)
+    UMI_len -- UMI length, pyrimidine mode only (default 10)
+    UMI_bins -- Number of possible UMIs (default depends on mode)
     downsample_absolute -- Maximum number of trimmed UMI sequences, randomly choose for downsampling (default 2e6)
     downsample_percentile -- Determine the 'downsample_absolute' variable as a percentile of the number of trimmed UMI sequences in all input samples (default False)
     '''
-    def __init__(self, dir_dict, sample_df, UMI_end={'T', 'C'}, \
-                 overwrite_dir=False, check_input=True, UMI_len=10, \
-                 UMI_bins=4**9*2, downsample_absolute=2e6, \
+    def __init__(self, dir_dict, sample_df, mode='anchored',
+                 anchor_seq=None, max_stagger=3, anchor_max_dist=1,
+                 UMI_end={'T', 'C'},
+                 overwrite_dir=False, check_input=True, UMI_len=10,
+                 UMI_bins=None, downsample_absolute=2e6,
                  downsample_percentile=False):
-        # Calculate the number of possible UMIs,
-        # 9x random nt. (A/G/T/C) and one purine (A/G)
-        self.UMI_bins = UMI_bins
-        self.UMI_len = UMI_len
-        # The 5' purine on the oligo end
-        # turns into a pyrimidine on the read:
-        self.UMI_end = UMI_end
+        self.mode = mode
+        if mode == 'anchored':
+            if anchor_seq is None:
+                raise ValueError("anchor_seq is required when mode='anchored'")
+            valid_bases = set('ACGTacgt')
+            if not all(c in valid_bases for c in anchor_seq):
+                raise ValueError(f"anchor_seq contains invalid characters: {anchor_seq}")
+            self.anchor_seq = anchor_seq.upper()
+            self.max_stagger = max_stagger
+            self.anchor_max_dist = anchor_max_dist
+            # Number of possible UMIs: sum of 4^i for stagger lengths 0..max_stagger
+            self.UMI_bins = UMI_bins if UMI_bins is not None else sum(4**i for i in range(max_stagger + 1))
+        elif mode == 'pyrimidine':
+            self.UMI_len = UMI_len
+            self.UMI_end = UMI_end
+            # 9x random nt (A/G/T/C) and one purine (A/G) → 4^9 * 2
+            self.UMI_bins = UMI_bins if UMI_bins is not None else 4**9 * 2
+        else:
+            raise ValueError(f"Unknown UMI trim mode: {mode!r}. Use 'anchored' or 'pyrimidine'.")
         
         # Input:
         self.sample_df = sample_df
@@ -661,20 +777,37 @@ class UMI_trim:
         Nseqs = 0
         with bz2.open(output_fnam, "wt") as output_fh:
             with bz2.open(input_fnam, "rt") as input_fh:
-                for title, seq, qual in FastqGeneralIterator(input_fh):
-                    umi = seq[0:self.UMI_len]
-                    if umi[-1] in self.UMI_end: # UMI found
-                        UMIs.add(umi)
-                        Nseqs += 1
-                        # Add UMI sequence to title:
-                        title = title + ':' + umi
-                        # Write the trimmed sequence:
-                        output_fh.write("@{}\n{}\n+\n{}\n".format(title, seq[self.UMI_len:], qual[self.UMI_len:]))
-                    else: # UMI not found
-                        # Write the untrimmed sequence if UMI was not found:
-                        untrimmed_fh.write("@{}\n{}\n+\n{}\n".format(title, seq, qual))
+                if self.mode == 'pyrimidine':
+                    for title, seq, qual in FastqGeneralIterator(input_fh):
+                        umi = seq[0:self.UMI_len]
+                        if umi[-1] in self.UMI_end: # UMI found
+                            UMIs.add(umi)
+                            Nseqs += 1
+                            title = title + ':' + umi
+                            output_fh.write("@{}\n{}\n+\n{}\n".format(title, seq[self.UMI_len:], qual[self.UMI_len:]))
+                        else: # UMI not found
+                            untrimmed_fh.write("@{}\n{}\n+\n{}\n".format(title, seq, qual))
+                elif self.mode == 'anchored':
+                    anchor_len = len(self.anchor_seq)
+                    for title, seq, qual in FastqGeneralIterator(input_fh):
+                        found = False
+                        for stagger in range(self.max_stagger + 1):
+                            if stagger + anchor_len > len(seq):
+                                break
+                            candidate = seq[stagger:stagger + anchor_len]
+                            if jellyfish.hamming_distance(candidate, self.anchor_seq) <= self.anchor_max_dist:
+                                trim_pos = stagger + anchor_len
+                                umi = seq[0:trim_pos]
+                                UMIs.add(umi)
+                                Nseqs += 1
+                                title = title + ':' + umi
+                                output_fh.write("@{}\n{}\n+\n{}\n".format(title, seq[trim_pos:], qual[trim_pos:]))
+                                found = True
+                                break
+                        if not found:
+                            untrimmed_fh.write("@{}\n{}\n+\n{}\n".format(title, seq, qual))
         untrimmed_fh.close()
-        
+
         # Calculate and return the observed and expected UMI count:
         N_umi_obs = len(UMIs)
         N_umi_exp = self.UMI_bins*(1-((self.UMI_bins-1) / self.UMI_bins)**Nseqs)

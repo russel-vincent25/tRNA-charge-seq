@@ -80,7 +80,7 @@ except ImportError:
 # ------------------------------------------------------------------
 # Path fields in config that should be resolved relative to project_dir
 # ------------------------------------------------------------------
-_PATH_FIELDS = ['sample_list', 'index_list', 'SWIPE_score_mat', 'common_seqs']
+_PATH_FIELDS = ['sample_list', 'index_list', 'SWIPE_score_mat', 'common_seqs', 'adapter_sequences']
 _DICT_PATH_FIELDS = ['tRNA_database']  # dict values are paths
 
 
@@ -248,6 +248,52 @@ class PreprocessingPipeline:
             self.log(f"  {row['fastq_mate1_filename']}: "
                     f"{row['percent_successfully_merged']:.1f}% merged")
 
+        # --- Merge QC probe: check UMI + barcode detectability ---
+        try:
+            barcodes = list(self.sample_df['barcode_seq'].unique())
+            umi_mode = self.config.get('umi_trim_mode', 'anchored')
+            probe_kwargs = {'umi_mode': umi_mode}
+
+            if umi_mode == 'anchored':
+                adapter_seqs_path = self.config.get('adapter_sequences', None)
+                if adapter_seqs_path is None:
+                    adapter_seqs_path = str(self.project_dir / 'utils' / 'adapter_sequences.yaml')
+                with open(adapter_seqs_path) as f:
+                    adapter_seqs = yaml.safe_load(f)
+                anchor_name = self.config.get('umi_anchor')
+                if anchor_name and anchor_name in adapter_seqs:
+                    probe_kwargs['anchor_seq'] = adapter_seqs[anchor_name]
+                    probe_kwargs['max_stagger'] = self.config.get('umi_max_stagger', 3)
+                    probe_kwargs['anchor_max_dist'] = self.config.get('umi_anchor_max_dist', 1)
+
+            probe_results = AR_obj.qc_probe(barcodes, **probe_kwargs)
+
+            self.log(f"  Merge QC probe ({self.config.get('qc_probe_reads', 10000)} reads per file pair):")
+            total_umi = total_bc = total_both = total_n = 0
+            for basename, stats in probe_results.items():
+                self.log(f"    {basename}: UMI={stats['pct_umi']}% "
+                         f"BC={stats['pct_bc']}% both={stats['pct_both']}%")
+                if 'stagger_counts' in stats:
+                    self.log(f"    {basename}: stagger distribution: {stats['stagger_counts']}")
+                total_umi += stats['pct_umi'] * stats['n_probed']
+                total_bc += stats['pct_bc'] * stats['n_probed']
+                total_both += stats['pct_both'] * stats['n_probed']
+                total_n += stats['n_probed']
+
+            if total_n > 0:
+                avg_umi = total_umi / total_n
+                avg_bc = total_bc / total_n
+                avg_both = total_both / total_n
+                self.log(f"  Average: UMI={avg_umi:.1f}% BC={avg_bc:.1f}% both={avg_both:.1f}%")
+                if avg_umi < 50:
+                    self.log("  WARNING: Low UMI detection rate (<50%). "
+                             "Check umi_trim_mode / umi_anchor config.", level="WARN")
+                if avg_bc < 50:
+                    self.log("  WARNING: Low barcode detection rate (<50%). "
+                             "Check barcode sequences in sample list.", level="WARN")
+        except Exception as e:
+            self.log(f"  Merge QC probe skipped: {e}", level="WARN")
+
         self.status['stages_completed'].append('0a')
 
     def stage_0b_barcode_split(self):
@@ -285,9 +331,33 @@ class PreprocessingPipeline:
         downsample_percentile = self.config.get('downsample_percentile', None)
         downsample_absolute = self.config.get('downsample_absolute', None)
 
+        # UMI trim mode: 'anchored' (default) or 'pyrimidine' (legacy)
+        umi_mode = self.config.get('umi_trim_mode', 'anchored')
+        anchor_seq = None
+        if umi_mode == 'anchored':
+            adapter_seqs_path = self.config.get('adapter_sequences', None)
+            if adapter_seqs_path is None:
+                adapter_seqs_path = str(self.project_dir / 'utils' / 'adapter_sequences.yaml')
+            with open(adapter_seqs_path) as f:
+                adapter_seqs = yaml.safe_load(f)
+            anchor_name = self.config.get('umi_anchor')
+            if anchor_name is None:
+                raise ValueError("Config field 'umi_anchor' is required when umi_trim_mode='anchored'")
+            if anchor_name not in adapter_seqs:
+                raise ValueError(f"Anchor '{anchor_name}' not found in {adapter_seqs_path}. "
+                                 f"Available: {list(adapter_seqs.keys())}")
+            anchor_seq = adapter_seqs[anchor_name]
+            self.log(f"  UMI mode: anchored (anchor={anchor_name}: {anchor_seq})")
+        else:
+            self.log(f"  UMI mode: pyrimidine (legacy)")
+
         working_df = self._get_working_sample_df()
         UMItrim_obj = UMI_trim(
             self.dir_dict, working_df,
+            mode=umi_mode,
+            anchor_seq=anchor_seq,
+            max_stagger=self.config.get('umi_max_stagger', 3),
+            anchor_max_dist=self.config.get('umi_anchor_max_dist', 1),
             overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
             downsample_percentile=downsample_percentile,
             downsample_absolute=downsample_absolute
