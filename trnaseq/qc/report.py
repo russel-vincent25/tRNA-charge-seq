@@ -514,6 +514,12 @@ tr:hover {{ background: #f0f3f8; }}
         if not pairs:
             return ''
 
+        MAX_PAIRS = 30
+        if len(pairs) > MAX_PAIRS:
+            return (f'<div style="padding:20px"><h3>Replicate Correlation</h3>'
+                    f'<p>Skipped: {len(pairs)} replicate pairs exceeds display '
+                    f'limit ({MAX_PAIRS}). Use PCA panel for replicate QC.</p></div>')
+
         n_pairs = len(pairs)
         cols = min(3, n_pairs)
         rows = (n_pairs + cols - 1) // cols
