@@ -4,10 +4,10 @@
 # Aggregation step — processes ALL samples together.
 # Reads per-sample alignment JSONs, computes stats, charge, and QC report.
 
-#SBATCH --cpus-per-task=4
-#SBATCH -p short
-#SBATCH -t 02:00:00
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=16
+#SBATCH -p medium
+#SBATCH -t 08:00:00
+#SBATCH --mem=32G
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=russel_vincent@hms.harvard.edu
 #SBATCH --job-name=tseq-235
@@ -23,7 +23,7 @@ echo "=== tRNA-charge-seq: Stage 2 + 3 + 5 ==="
 echo "Config:  $CONFIG"
 echo "Project: $PROJECT_DIR"
 echo "Node:    $(hostname)"
-echo "CPUs:    ${SLURM_CPUS_PER_TASK:-4}"
+echo "CPUs:    ${SLURM_CPUS_PER_TASK:-16}"
 echo "Start:   $(date)"
 echo ""
 
@@ -34,7 +34,7 @@ conda activate tRNA-seq
 python -m trnaseq pipeline \
     --config "$CONFIG" \
     --project-dir "$PROJECT_DIR" \
-    --n-jobs "${SLURM_CPUS_PER_TASK:-4}" \
+    --n-jobs "${SLURM_CPUS_PER_TASK:-16}" \
     --stages 2,3,5
 
 if [ $? -ne 0 ]; then

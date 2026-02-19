@@ -84,11 +84,16 @@ CPUS_0C1=2
 TIME_0C1="04:00:00"
 MEM_0C1="2G"
 
-# Stage 2+3+5: aggregation; mostly I/O-bound (reading JSONs, writing CSVs)
-# 4 CPUs is enough; RAM scales with sample count (~7GB for 24 samples)
-CPUS_235=4
+# Stage 2+3+5: aggregation; I/O-bound (reading JSONs, writing CSVs)
+# 42 min for 24 samples with 4 CPUs → scales ~linearly with N_SAMPLES/CPUS
+# 16 CPUs keeps 264 samples under 4h; RAM scales with sample count
+CPUS_235=16
 if [ $N_SAMPLES -lt 64 ]; then MEM_235="16G"; else MEM_235="32G"; fi
-TIME_235="02:00:00"
+# ~1.75 min per sample per CPU → estimate wall time, minimum 1h, cap 12h
+TIME_235_MIN=$(( (N_SAMPLES * 2 / CPUS_235 + 1) * 3 ))
+if [ $TIME_235_MIN -lt 60 ]; then TIME_235_MIN=60; fi
+if [ $TIME_235_MIN -gt 720 ]; then TIME_235_MIN=720; fi
+TIME_235=$(printf "%02d:%02d:00" $((TIME_235_MIN / 60)) $((TIME_235_MIN % 60)))
 
 echo "=============================================================="
 echo "tRNA-charge-seq SLURM Pipeline"

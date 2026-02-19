@@ -144,7 +144,7 @@ JOB2: stage2_5.job        (single job)
 |------|------|-------------------|------|
 | `stage0ab.job` | Single job | 4 CPU, 16G | 1 hr |
 | `stage0c_1.job` | Array job | 4 CPU, 8G per task | 45 min |
-| `stage2_5.job` | Single job | 16 CPU, 64G | 2 hr |
+| `stage2_5.job` | Single job | 16 CPU, 32G | 8 hr |
 
 **Thread awareness:** The pipeline uses `--threads-per-job` to control how many
 threads each AdapterRemoval or SWIPE subprocess uses. Stage 0ab computes
@@ -218,9 +218,9 @@ echo "JOB2: $JOB2"
 
 | Dataset | 0a+0b | 0c+1 (wall) | 2+3+5 | Total |
 |---------|-------|-------------|-------|-------|
-| 24 samples | ~15 min | ~5 min | ~10 min | **~30 min** |
-| 72 samples | ~25 min | ~10 min | ~15 min | **~50 min** |
-| 256 samples | ~35 min | ~45 min | ~35 min | **~2 hours** |
+| 24 samples | ~15 min | ~59 min | ~42 min | **~2 hours** |
+| 72 samples | ~25 min | ~59 min | ~1.5 hr | **~2.5 hours** |
+| 264 samples | ~35 min | ~59 min | ~4 hr | **~5 hours** |
 
 ---
 
