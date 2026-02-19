@@ -24,8 +24,11 @@ module load conda/miniforge3/24.11.3-0
 conda env create -f environment.yml    # ~10-15 min
 conda activate tRNA-seq
 
+# Install trnaseq package (editable — survives git pulls)
+pip install -e .
+
 # Verify
-python -c "import pandas, numpy, scipy, plotly; print('OK')"
+python -c "import pandas, numpy, scipy, plotly, trnaseq; print('OK')"
 AdapterRemoval --version
 swipe -h 2>&1 | head -1
 ```
@@ -314,4 +317,5 @@ Default is 2.
 | `FileNotFoundError: raw_fastq` | Check path: `ls $PROJECT_DIR/data/raw_fastq/` |
 | Stage 2 fails (no stats) | Check JOB1 logs — some array tasks may have failed |
 | `tRNA_database` not found | Verify the absolute path in config exists on O2 |
+| `No module named trnaseq` | Run `pip install -e .` from the repo root (one-time, persists across git pulls) |
 | `swipe: command not found` | Conda env not activated — check `.job` module load |
