@@ -5,7 +5,7 @@
 # Reads per-sample alignment JSONs, computes stats, charge, and QC report.
 
 #SBATCH --cpus-per-task=16
-#SBATCH -p medium
+#SBATCH -p short
 #SBATCH -t 08:00:00
 #SBATCH --mem=32G
 #SBATCH --mail-type=BEGIN,END,FAIL
