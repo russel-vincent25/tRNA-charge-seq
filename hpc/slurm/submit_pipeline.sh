@@ -68,6 +68,7 @@ mkdir -p /home/ruv988/jobOutput
 THREADS_PER_JOB=2
 
 # Stage 0ab: process all file pairs; scale CPUs with sample count, cap at 16
+# RAM: AR_merge + BC_split are lightweight stream processors (~500MB for 24 samples)
 CPUS_0AB=$(( N_SAMPLES < 16 ? (N_SAMPLES > 2 ? N_SAMPLES : 2) : 16 ))
 N_JOBS_0AB=$(( CPUS_0AB / THREADS_PER_JOB ))
 # ~3 min per file pair at full parallelism, minimum 1h, cap 12h
@@ -75,17 +76,19 @@ TIME_0AB_MIN=$(( (N_SAMPLES / N_JOBS_0AB + 1) * 3 ))
 if [ $TIME_0AB_MIN -lt 60 ]; then TIME_0AB_MIN=60; fi
 if [ $TIME_0AB_MIN -gt 720 ]; then TIME_0AB_MIN=720; fi
 TIME_0AB=$(printf "%02d:%02d:00" $((TIME_0AB_MIN / 60)) $((TIME_0AB_MIN % 60)))
-MEM_0AB="$(( CPUS_0AB * 2 ))G"
+MEM_0AB="4G"
 
-# Stage 0c+1: per-sample array; SWIPE gets all CPUs as threads
-CPUS_0C1=4
-TIME_0C1="12:00:00"
-MEM_0C1="8G"
+# Stage 0c+1: per-sample array; SWIPE is I/O-bound (~50% CPU efficiency)
+# 2 CPUs sufficient; RAM peaks at ~1GB even for large samples
+CPUS_0C1=2
+TIME_0C1="04:00:00"
+MEM_0C1="2G"
 
-# Stage 2+3+5: aggregation scales with sample count
-CPUS_235=$(( N_SAMPLES < 16 ? (N_SAMPLES > 4 ? N_SAMPLES : 4) : 16 ))
-if [ $N_SAMPLES -lt 256 ]; then MEM_235="32G"; else MEM_235="64G"; fi
-TIME_235="12:00:00"
+# Stage 2+3+5: aggregation; mostly I/O-bound (reading JSONs, writing CSVs)
+# 4 CPUs is enough; RAM scales with sample count (~7GB for 24 samples)
+CPUS_235=4
+if [ $N_SAMPLES -lt 64 ]; then MEM_235="16G"; else MEM_235="32G"; fi
+TIME_235="02:00:00"
 
 echo "=============================================================="
 echo "tRNA-charge-seq SLURM Pipeline"

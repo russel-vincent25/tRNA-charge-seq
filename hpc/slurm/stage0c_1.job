@@ -4,10 +4,10 @@
 # Uses SLURM_ARRAY_TASK_ID as --sample-index.
 # Each array task processes ONE sample independently.
 
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH -p short
-#SBATCH -t 12:00:00
-#SBATCH --mem=8G
+#SBATCH -t 04:00:00
+#SBATCH --mem=2G
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=russel_vincent@hms.harvard.edu
 #SBATCH --job-name=tseq-0c1
@@ -20,7 +20,7 @@ CONFIG="$1"
 PROJECT_DIR="$2"
 SAMPLE_IDX="${SLURM_ARRAY_TASK_ID}"
 
-CPUS="${SLURM_CPUS_PER_TASK:-4}"
+CPUS="${SLURM_CPUS_PER_TASK:-2}"
 
 echo "=== tRNA-charge-seq: Stage 0c + 1 (sample ${SAMPLE_IDX}) ==="
 echo "Config:  $CONFIG"

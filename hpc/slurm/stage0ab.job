@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH -p short
 #SBATCH -t 01:00:00
-#SBATCH --mem=16G
+#SBATCH --mem=4G
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=russel_vincent@hms.harvard.edu
 #SBATCH --job-name=tseq-0ab
