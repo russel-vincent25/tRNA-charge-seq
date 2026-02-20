@@ -71,9 +71,9 @@ THREADS_PER_JOB=2
 # RAM: AR_merge + BC_split are lightweight stream processors (~500MB for 24 samples)
 CPUS_0AB=$(( N_SAMPLES < 16 ? (N_SAMPLES > 2 ? N_SAMPLES : 2) : 16 ))
 N_JOBS_0AB=$(( CPUS_0AB / THREADS_PER_JOB ))
-# ~3 min per file pair at full parallelism, minimum 1h, cap 12h
-TIME_0AB_MIN=$(( (N_SAMPLES / N_JOBS_0AB + 1) * 3 ))
-if [ $TIME_0AB_MIN -lt 60 ]; then TIME_0AB_MIN=60; fi
+# ~6 min per batch (AR merge + BC split), minimum 2h, cap 12h
+TIME_0AB_MIN=$(( (N_SAMPLES / N_JOBS_0AB + 1) * 6 ))
+if [ $TIME_0AB_MIN -lt 120 ]; then TIME_0AB_MIN=120; fi
 if [ $TIME_0AB_MIN -gt 720 ]; then TIME_0AB_MIN=720; fi
 TIME_0AB=$(printf "%02d:%02d:00" $((TIME_0AB_MIN / 60)) $((TIME_0AB_MIN % 60)))
 MEM_0AB="4G"
