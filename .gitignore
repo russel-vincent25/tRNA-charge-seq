@@ -17,10 +17,14 @@
 **/dev_stuff
 sandbox.ipynb
 
+# Python packaging
+*.egg-info/
+
 # Feature implementation plans
 plans/
-# Claude Code local config
+# Claude Code local config and tmp files
 .claude/
+tmp/
 
 # Data folder (too big for Github)
 /projects/**/*.fasta

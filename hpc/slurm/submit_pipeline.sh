@@ -81,7 +81,7 @@ MEM_0AB="4G"
 # Stage 0c+1: per-sample array; SWIPE is I/O-bound (~50% CPU efficiency)
 # 2 CPUs sufficient; RAM peaks at ~1GB even for large samples
 CPUS_0C1=2
-TIME_0C1="04:00:00"
+TIME_0C1="08:00:00"
 MEM_0C1="2G"
 
 # Stage 2+3+5: aggregation; I/O-bound (reading JSONs, writing CSVs)
