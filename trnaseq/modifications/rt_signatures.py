@@ -13,13 +13,11 @@ Key concepts:
 
 import numpy as np
 import pandas as pd
-import pysam
 import bz2
-from Bio import SeqIO, Seq, Align
+import warnings
+from Bio import SeqIO, Align
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
-import warnings
-import copy
 
 
 class RTSignatureAnalyzer:
@@ -123,6 +121,10 @@ class RTSignatureAnalyzer:
     ) -> np.ndarray:
         """
         Build PSCM for a single read-reference alignment.
+
+        .. deprecated::
+            Use :class:`~trnaseq.modifications.positional.PositionalExtractor`
+            for efficient batch PSCM extraction from SWalign JSON files.
 
         Performs pairwise alignment between read and reference, then extracts
         the observed nucleotide at each position (including mismatches and gaps).
@@ -265,7 +267,8 @@ class RTSignatureAnalyzer:
 
     def calculate_rt_stops(
         self,
-        pscm_df: pd.DataFrame
+        pscm_df: pd.DataFrame,
+        rt_stop_counts: Optional[np.ndarray] = None,
     ) -> pd.DataFrame:
         """
         Calculate RT stop frequencies.
@@ -273,38 +276,65 @@ class RTSignatureAnalyzer:
         RT stops indicate positions where reverse transcriptase prematurely
         terminates, often due to modified nucleotides (e.g., m1A).
 
-        Formula: RTstop(i) = 100 * (cov(i+1) - cov(i)) / cov(i+1)
-        (from Wang et al. 2021)
+        When ``rt_stop_counts`` is provided (from PositionalExtractor), the
+        actual per-position RT stop counts are used directly. Otherwise, the
+        heuristic coverage-difference formula is applied:
+
+            RTstop(i) = 100 * (cov(i+1) - cov(i)) / cov(i+1)
 
         Args:
-            pscm_df: DataFrame with PSCM data (positions × nucleotides)
+            pscm_df: DataFrame with PSCM data (positions x nucleotides)
+            rt_stop_counts: Optional array of direct RT stop counts per
+                position (from PositionalExtractor PSCM column 7).
 
         Returns:
-            DataFrame with columns: position, coverage, coverage_next, rt_stop_pct
+            DataFrame with columns: position, coverage, coverage_next,
+            rt_stop_pct, rt_stop_count (when available)
         """
         # Calculate total coverage per position
         coverage = pscm_df.sum(axis=1).values
 
-        # Shift coverage by one position
-        coverage_next = np.roll(coverage, -1)
-        coverage_next[-1] = coverage[-1]  # Last position has no "next"
+        if rt_stop_counts is not None:
+            # Use actual RT stop counts from PositionalExtractor
+            rt_stop_counts = np.asarray(rt_stop_counts, dtype=np.float64)
+            rt_stops = np.divide(
+                rt_stop_counts * 100,
+                coverage,
+                out=np.zeros_like(coverage, dtype=np.float64),
+                where=coverage != 0,
+            )
+            coverage_next = np.roll(coverage, -1)
+            coverage_next[-1] = coverage[-1]
 
-        # Calculate RT stops
-        rt_stops = 100 * np.divide(
-            (coverage_next - coverage),
-            coverage_next,
-            out=np.zeros_like(coverage, dtype=np.float64),
-            where=coverage_next != 0
-        )
+            results = []
+            for pos in range(len(coverage)):
+                results.append({
+                    'position': pos + 1,
+                    'coverage': coverage[pos],
+                    'coverage_next': coverage_next[pos],
+                    'rt_stop_pct': rt_stops[pos],
+                    'rt_stop_count': int(rt_stop_counts[pos]),
+                })
+        else:
+            # Heuristic: coverage-difference formula (Wang et al. 2021)
+            coverage_next = np.roll(coverage, -1)
+            coverage_next[-1] = coverage[-1]
 
-        results = []
-        for pos in range(len(coverage)):
-            results.append({
-                'position': pos + 1,  # 1-based
-                'coverage': coverage[pos],
-                'coverage_next': coverage_next[pos],
-                'rt_stop_pct': rt_stops[pos]
-            })
+            rt_stops = 100 * np.divide(
+                (coverage_next - coverage),
+                coverage_next,
+                out=np.zeros_like(coverage, dtype=np.float64),
+                where=coverage_next != 0
+            )
+
+            results = []
+            for pos in range(len(coverage)):
+                results.append({
+                    'position': pos + 1,
+                    'coverage': coverage[pos],
+                    'coverage_next': coverage_next[pos],
+                    'rt_stop_pct': rt_stops[pos],
+                })
 
         return pd.DataFrame(results)
 
@@ -450,6 +480,10 @@ class RTSignatureAnalyzer:
         """
         Process a sample using the existing pipeline's output format.
 
+        .. deprecated::
+            Use :class:`~trnaseq.modifications.positional.PositionalExtractor`
+            which streams SWalign JSON files directly for much better performance.
+
         This method is compatible with the existing tRNA-charge-seq pipeline,
         reading stats CSV and UMI-trimmed FASTQ files to build PSCMs.
 
@@ -574,6 +608,88 @@ class RTSignatureAnalyzer:
 
         self.pscm_data = pscm_dfs
         return pscm_dfs
+
+    def load_pscm_from_positional(
+        self,
+        pscm_dict: Dict[str, 'np.ndarray'],
+    ) -> Dict[str, pd.DataFrame]:
+        """Load pre-computed PSCMs from PositionalExtractor.
+
+        Converts PositionalExtractor's ndarray format (ref_len x 8) into the
+        DataFrame format expected by this class (ref_len x 7, columns ACGTUN-).
+
+        Args:
+            pscm_dict: Output of ``PositionalExtractor.extract_sample()``.
+                Keys are tRNA names, values are ndarrays with columns
+                [A, C, G, T, N, gap, coverage, rt_stop].
+
+        Returns:
+            Dictionary mapping tRNA names to PSCM DataFrames compatible
+            with all analysis methods in this class.
+        """
+        pscm_dfs = {}
+        for trna_name, mat in pscm_dict.items():
+            # Map PositionalExtractor columns to RTSignatureAnalyzer columns
+            # Extractor: [A=0, C=1, G=2, T=3, N=4, gap=5, coverage=6, rt_stop=7]
+            # Analyzer:  [A, C, G, T, U, N, -]
+            n_pos = mat.shape[0]
+            df_data = {
+                'A': mat[:, 0],
+                'C': mat[:, 1],
+                'G': mat[:, 2],
+                'T': mat[:, 3],
+                'U': np.zeros(n_pos),  # U not tracked separately
+                'N': mat[:, 4],
+                '-': mat[:, 5],
+            }
+            pscm_dfs[trna_name] = pd.DataFrame(df_data)
+
+        if self.verbose:
+            print(f"Loaded PSCMs for {len(pscm_dfs)} tRNAs from PositionalExtractor")
+
+        self.pscm_data = pscm_dfs
+        # Also store raw matrices for rt_stop counts
+        self._positional_raw = pscm_dict
+        return pscm_dfs
+
+    def analyze_trna_with_actual_stops(
+        self,
+        trna_name: str,
+        pscm_df: pd.DataFrame,
+        rt_stop_counts: Optional[np.ndarray] = None,
+    ) -> Dict[str, pd.DataFrame]:
+        """Analyze a single tRNA using actual RT stop counts when available.
+
+        Like :meth:`analyze_trna`, but passes RT stop counts directly to
+        :meth:`calculate_rt_stops` for more accurate profiling.
+
+        Args:
+            trna_name: Name of the tRNA.
+            pscm_df: Position-Specific Count Matrix as DataFrame.
+            rt_stop_counts: Per-position RT stop counts from PositionalExtractor.
+
+        Returns:
+            Dictionary with analysis results (mismatch, gaps, rt_stops, signatures).
+        """
+        if trna_name not in self.reference_sequences:
+            raise ValueError(f"tRNA {trna_name} not found in reference")
+
+        ref_seq = self.reference_sequences[trna_name]['seq']
+
+        mismatch_df = self.calculate_mismatch_rates(pscm_df, ref_seq)
+        gap_df = self.calculate_gap_rates(pscm_df)
+        rt_stop_df = self.calculate_rt_stops(pscm_df, rt_stop_counts=rt_stop_counts)
+
+        signatures_df = self.identify_signature_positions(
+            mismatch_df, gap_df, rt_stop_df
+        )
+
+        return {
+            'mismatch': mismatch_df,
+            'gaps': gap_df,
+            'rt_stops': rt_stop_df,
+            'signatures': signatures_df,
+        }
 
     def analyze_all_trnas(
         self,

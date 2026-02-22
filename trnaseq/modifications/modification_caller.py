@@ -545,6 +545,158 @@ class ModificationCaller:
         """
         return calls_df[calls_df['confidence'] >= min_confidence].copy()
 
+    def call_novel_positions(
+        self,
+        trna_name: str,
+        signatures_df: pd.DataFrame,
+        pscm_df: Optional[pd.DataFrame] = None,
+        reference_seq: Optional[str] = None,
+        min_coverage: int = 50,
+    ) -> pd.DataFrame:
+        """
+        Identify novel modification candidates at signature positions.
+
+        Iterates positions where ``has_signature=True`` and skips those that
+        already matched a known profile via :meth:`call_modification_at_position`.
+        Remaining positions with statistically significant mismatch rates
+        are reported as ``novel_candidate``.
+
+        Args:
+            trna_name: Name of the tRNA.
+            signatures_df: RT signature DataFrame (must have ``has_signature``).
+            pscm_df: Position-Specific Count Matrix DataFrame.
+            reference_seq: Reference sequence string.
+            min_coverage: Minimum read coverage to consider a position.
+
+        Returns:
+            DataFrame of novel modification candidates with dominant mutation
+            pattern and statistical evidence.
+        """
+        all_calls = []
+
+        for _, row in signatures_df.iterrows():
+            if not row.get('has_signature', False):
+                continue
+
+            position = int(row['position'])
+            coverage = row.get('coverage', 0)
+            if coverage < min_coverage:
+                continue
+
+            # Check if any known profile matches
+            pscm_row = None
+            ref_nt = None
+            if pscm_df is not None:
+                pos_idx = position - 1
+                if 0 <= pos_idx < len(pscm_df):
+                    pscm_row = pscm_df.iloc[pos_idx]
+            if reference_seq is not None and position <= len(reference_seq):
+                ref_nt = reference_seq[position - 1]
+
+            known_calls = self.call_modification_at_position(
+                position, row, pscm_row, ref_nt
+            )
+            if known_calls:
+                continue  # Already matched a known profile
+
+            # Statistical test
+            mismatch_rate = row.get('mismatch_rate', 0)
+            mismatch_count = mismatch_rate * coverage
+            pvalue = self.perform_statistical_test(
+                int(coverage), int(mismatch_count)
+            )
+            if pvalue > self.alpha:
+                continue  # Not significant
+
+            # Extract dominant mutation pattern
+            dominant_pattern = ''
+            if pscm_row is not None and ref_nt is not None:
+                nt_counts = {}
+                for nt in ['A', 'C', 'G', 'T']:
+                    if nt != ref_nt:
+                        cnt = pscm_row.get(nt, 0)
+                        if cnt > 0:
+                            nt_counts[f'{ref_nt}->{nt}'] = cnt
+                if nt_counts:
+                    dominant_pattern = max(nt_counts, key=nt_counts.get)
+
+            all_calls.append({
+                'trna_name': trna_name,
+                'position': position,
+                'modification': 'novel_candidate',
+                'full_name': 'unknown modification',
+                'confidence': min(1.0, mismatch_rate * 2),
+                'mismatch_rate': mismatch_rate,
+                'rt_stop_pct': row.get('rt_stop_pct', 0),
+                'gap_rate': row.get('gap_rate', 0),
+                'coverage': coverage,
+                'pattern_fraction': 0.0,
+                'pvalue': pvalue,
+                'in_typical_position': False,
+                'dominant_pattern': dominant_pattern,
+                'source': 'novel_candidate',
+            })
+
+        return pd.DataFrame(all_calls) if all_calls else pd.DataFrame()
+
+    def call_all(
+        self,
+        trna_name: str,
+        signatures_df: pd.DataFrame,
+        pscm_df: Optional[pd.DataFrame] = None,
+        reference_seq: Optional[str] = None,
+        discover_novel: bool = False,
+        min_coverage: int = 50,
+    ) -> pd.DataFrame:
+        """
+        Run both known profile matching and optional novel discovery.
+
+        Wrapper that calls :meth:`call_modifications_for_trna` for known
+        profiles and :meth:`call_novel_positions` for novel candidates,
+        then returns the combined results.
+
+        Args:
+            trna_name: Name of the tRNA.
+            signatures_df: RT signature DataFrame.
+            pscm_df: Position-Specific Count Matrix DataFrame.
+            reference_seq: Reference sequence string.
+            discover_novel: If True, also run novel modification discovery.
+            min_coverage: Minimum coverage for novel discovery.
+
+        Returns:
+            Combined DataFrame with ``source`` column ('known' or
+            'novel_candidate').
+        """
+        known_df = self.call_modifications_for_trna(
+            trna_name, signatures_df, pscm_df, reference_seq
+        )
+        if not known_df.empty:
+            known_df['source'] = 'known'
+
+        if discover_novel:
+            novel_df = self.call_novel_positions(
+                trna_name, signatures_df, pscm_df, reference_seq,
+                min_coverage=min_coverage,
+            )
+            if not novel_df.empty and not known_df.empty:
+                combined = pd.concat([known_df, novel_df], ignore_index=True)
+            elif not novel_df.empty:
+                combined = novel_df
+            else:
+                combined = known_df
+        else:
+            combined = known_df
+
+        if not combined.empty:
+            # Apply FDR correction across all tested positions
+            if 'pvalue' in combined.columns:
+                pvals = combined['pvalue'].fillna(1.0).values
+                combined['fdr_significant'] = benjamini_hochberg_fdr(
+                    pvals, alpha=self.alpha
+                )
+
+        return combined
+
     def summarize_modifications(
         self,
         calls_df: pd.DataFrame
@@ -573,3 +725,39 @@ class ModificationCaller:
         summary = summary.reset_index()
 
         return summary
+
+
+def benjamini_hochberg_fdr(pvalues, alpha=0.05):
+    """Benjamini-Hochberg FDR correction.
+
+    Manual implementation to avoid scipy version dependency issues.
+
+    Args:
+        pvalues: Array-like of p-values.
+        alpha: FDR threshold (default 0.05).
+
+    Returns:
+        Boolean array indicating which tests pass FDR correction.
+    """
+    pvals = np.asarray(pvalues, dtype=np.float64)
+    n = len(pvals)
+    if n == 0:
+        return np.array([], dtype=bool)
+
+    # Sort p-values and track original indices
+    sorted_idx = np.argsort(pvals)
+    sorted_pvals = pvals[sorted_idx]
+
+    # BH threshold: p(i) <= (i / n) * alpha
+    thresholds = np.arange(1, n + 1) / n * alpha
+
+    # Find largest k where p(k) <= threshold(k)
+    below = sorted_pvals <= thresholds
+    significant = np.zeros(n, dtype=bool)
+
+    if below.any():
+        max_k = np.max(np.where(below)[0])
+        # All tests up to and including max_k are significant
+        significant[sorted_idx[:max_k + 1]] = True
+
+    return significant

@@ -1,0 +1,27 @@
+organism,tRNA_isotype,tRNA_anticodon,sprinzl_position,modification_short_name,modification_full_name,modomics_abbrev,rt_signature_type,rt_signature_pattern,enzyme,universality
+Mus musculus,all,all,9,m1G,1-methylguanosine,K,rt_stop,,Trmt10a,universal
+Mus musculus,all,all,10,m2G,N2-methylguanosine,L,mismatch,G->A,Trmt11,frequent
+Mus musculus,all,all,13,Psi,pseudouridine,P,silent,,Pus7,frequent
+Mus musculus,all,all,16,D,dihydrouridine,D,rt_stop,,Dus1l/Dus2l,universal
+Mus musculus,all,all,17,D,dihydrouridine,D,rt_stop,,Dus1l/Dus2l,frequent
+Mus musculus,all,all,20,D,dihydrouridine,D,rt_stop,,Dus3l/Dus4l,frequent
+Mus musculus,all,all,20a,D,dihydrouridine,D,rt_stop,,Dus3l/Dus4l,rare
+Mus musculus,all,all,26,m22G,N2-N2-dimethylguanosine,R,mismatch,G->A,Trmt1,universal
+Mus musculus,all,all,27,Psi,pseudouridine,P,silent,,Pus1,frequent
+Mus musculus,all,all,28,Psi,pseudouridine,P,silent,,Pus1,frequent
+Mus musculus,all,all,31,Psi,pseudouridine,P,silent,,Pus1,frequent
+Mus musculus,all,all,32,m3C,3-methylcytidine,Щ,mismatch,C->T,Mettl2a/Mettl2b/Mettl6,conditional
+Mus musculus,all,all,34,various,wobble modifications,various,mismatch,,various,conditional
+Mus musculus,all,all,34,mcm5U,5-methoxycarbonylmethyluridine,mcm5U,mismatch,U->C,Alkbh8/Ctu1/Ctu2,conditional
+Mus musculus,all,all,34,mcm5s2U,5-methoxycarbonylmethyl-2-thiouridine,mcm5s2U,combined,U->C,Alkbh8/Ctu1/Ctu2,conditional
+Mus musculus,all,all,37,i6A,N6-isopentenyladenosine,i6A,mismatch,A->G,Trit1,conditional
+Mus musculus,all,all,37,m1G,1-methylguanosine,K,rt_stop,,Trmt5,conditional
+Mus musculus,all,all,37,t6A,N6-threonylcarbamoyladenosine,t6A,mismatch,A->T,Yrdc/Osgep,conditional
+Mus musculus,all,all,38,Psi,pseudouridine,P,silent,,Pus3,frequent
+Mus musculus,all,all,39,Psi,pseudouridine,P,silent,,Pus3,frequent
+Mus musculus,all,all,46,m7G,7-methylguanosine,7,mismatch,G->A,Mettl1/Wdr4,universal
+Mus musculus,all,all,48,m5C,5-methylcytidine,?,silent,,Nsun2,frequent
+Mus musculus,all,all,49,m5C,5-methylcytidine,?,silent,,Nsun2,frequent
+Mus musculus,all,all,54,m5U,5-methyluridine (ribothymidine),T,silent,,Trmt2a,universal
+Mus musculus,all,all,55,Psi,pseudouridine,P,silent,,Trub1/Pus10,universal
+Mus musculus,all,all,58,m1A,1-methyladenosine,m1A,combined,A->any,Trmt6/Trmt61a,universal

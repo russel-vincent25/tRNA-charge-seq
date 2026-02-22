@@ -76,6 +76,15 @@ try:
 except ImportError:
     QC_AVAILABLE = False
 
+try:
+    from trnaseq.modifications.positional import PositionalExtractor
+    from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
+    from trnaseq.modifications.modification_caller import ModificationCaller
+    from trnaseq.modifications.modomics import MODOMICSAnnotator
+    MODIFICATIONS_AVAILABLE = True
+except ImportError:
+    MODIFICATIONS_AVAILABLE = False
+
 
 # ------------------------------------------------------------------
 # Path fields in config that should be resolved relative to project_dir
@@ -685,6 +694,83 @@ class PreprocessingPipeline:
             import traceback
             self.log(traceback.format_exc(), level="ERROR")
 
+    def stage_6_modification_analysis(self):
+        """Stage 6: Modification Analysis (optional)
+
+        Per-position RT signature extraction, MODOMICS annotation, and
+        optional novel modification discovery.  Requires SWalign JSONs from
+        stage 1.
+        """
+        self.log("=" * 60)
+        self.log("Stage 6: Modification Analysis")
+        self.log("=" * 60)
+
+        if not MODIFICATIONS_AVAILABLE:
+            self.log("WARNING: Modification analysis modules not available. "
+                     "Skipping stage 6.", level="WARN")
+            return
+
+        try:
+            # Determine reference FASTA (first species in tRNA_database config)
+            tRNA_database = self.config['tRNA_database']
+            ref_fasta = list(tRNA_database.values())[0]
+
+            organism = self.config.get('organism', 'Escherichia coli')
+            min_coverage = self.config.get('modification_min_coverage', 50)
+            discover_novel = self.config.get('discover_novel_modifications', False)
+            use_api = not self.config.get('no_modomics', True)
+
+            json_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
+            output_dir = self.project_dir / 'modification_analysis'
+            output_dir.mkdir(exist_ok=True)
+
+            sample_names = self.sample_df['sample_name_unique'].tolist()
+
+            self.log(f"  Reference: {ref_fasta}")
+            self.log(f"  Organism: {organism}")
+            self.log(f"  Samples: {len(sample_names)}")
+            self.log(f"  Novel discovery: {discover_novel}")
+
+            # Extract PSCMs
+            extractor = PositionalExtractor(ref_fasta)
+            all_pscm = extractor.run_parallel(
+                json_dir, sample_names, n_jobs=self.n_jobs
+            )
+
+            # MODOMICS
+            annotator = MODOMICSAnnotator(organism)
+            mods_df = annotator.get_modifications(use_api=use_api)
+            self.log(f"  Loaded {len(mods_df)} known modification entries")
+
+            # Analyze each sample
+            analyzer = RTSignatureAnalyzer(
+                min_coverage=min_coverage, verbose=False
+            )
+            analyzer.load_reference(ref_fasta)
+            caller = ModificationCaller(organism=organism)
+
+            for sample_name, pscm_dict in all_pscm.items():
+                pscm_dfs = analyzer.load_pscm_from_positional(pscm_dict)
+
+                rt_profile = extractor.compute_rt_profile(pscm_dict)
+                mm_profile = extractor.compute_mismatch_profile(pscm_dict)
+
+                sample_dir = output_dir / sample_name
+                sample_dir.mkdir(exist_ok=True)
+
+                rt_profile.to_parquet(sample_dir / 'rt_profile.parquet', index=False)
+                mm_profile.to_parquet(sample_dir / 'mismatch_profile.parquet', index=False)
+
+                self.log(f"  {sample_name}: {len(pscm_dict)} tRNAs processed")
+
+            self.status['stages_completed'].append('6')
+            self.log("  Modification analysis complete!")
+
+        except Exception as e:
+            self.log(f"ERROR in modification analysis: {str(e)}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="ERROR")
+
     def _file_size_mb(self, path):
         """Return file size in MB, or None if file doesn't exist."""
         p = Path(path)
@@ -823,7 +909,7 @@ class PreprocessingPipeline:
         Returns:
             Set of stage identifiers: {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
         """
-        ALL_STAGES = {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
+        ALL_STAGES = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6'}
 
         if stages_str == 'all':
             return ALL_STAGES
@@ -901,7 +987,7 @@ class PreprocessingPipeline:
                     e.g. {'2', '3', '5'} to run only stats, charge, and QC.
         """
         if stages is None:
-            stages = {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
+            stages = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6'}
 
         try:
             self.log("Starting tRNA-charge-seq preprocessing pipeline")
@@ -1002,6 +1088,14 @@ class PreprocessingPipeline:
                     self.stage_timings['stage_5'] = time.time() - t0
                 else:
                     self.log("Skipping Stage 5: QC Report (disabled in config)")
+
+            if '6' in stages:
+                if self.config.get('run_modification_analysis', False):
+                    t0 = time.time()
+                    self.stage_6_modification_analysis()
+                    self.stage_timings['stage_6'] = time.time() - t0
+                else:
+                    self.log("Skipping Stage 6: Modification Analysis (disabled in config)")
 
             # Collect file metrics and save
             if self.sample_index is not None:

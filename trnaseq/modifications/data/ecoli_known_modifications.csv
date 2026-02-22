@@ -1,0 +1,38 @@
+organism,tRNA_isotype,tRNA_anticodon,sprinzl_position,modification_short_name,modification_full_name,modomics_abbrev,rt_signature_type,rt_signature_pattern,enzyme,universality
+Escherichia coli,all,all,4,s4U,4-thiouridine,4,mismatch,U->C,ThiI/IscS,universal
+Escherichia coli,all,all,8,s4U,4-thiouridine,4,mismatch,U->C,ThiI/IscS,universal
+Escherichia coli,all,all,10,m2G,N2-methylguanosine,L,mismatch,G->A,TrmG10/RsmC,frequent
+Escherichia coli,all,all,16,D,dihydrouridine,D,rt_stop,,DusA/DusB/DusC,universal
+Escherichia coli,all,all,17,D,dihydrouridine,D,rt_stop,,DusA/DusB/DusC,frequent
+Escherichia coli,all,all,20,D,dihydrouridine,D,rt_stop,,DusA/DusB/DusC,frequent
+Escherichia coli,all,all,20a,D,dihydrouridine,D,rt_stop,,DusA/DusB/DusC,rare
+Escherichia coli,all,all,26,m2G,N2-methylguanosine,L,mismatch,G->A,TrmG10/RsmC,frequent
+Escherichia coli,all,all,32,m3C,3-methylcytidine,Щ,mismatch,C->T,TrmH,conditional
+Escherichia coli,Ile,CAU,34,k2C,lysidine,k2C,mismatch,C->U,TilS,conditional
+Escherichia coli,all,all,34,various,wobble modifications,various,mismatch,,various,conditional
+Escherichia coli,Val,UAC,34,cmo5U,uridine 5-oxyacetic acid,cmo5U,mismatch,U->C,CmoA/CmoB,conditional
+Escherichia coli,Ala,UGC,34,cmo5U,uridine 5-oxyacetic acid,cmo5U,mismatch,U->C,CmoA/CmoB,conditional
+Escherichia coli,Ser,UGA,34,cmo5U,uridine 5-oxyacetic acid,cmo5U,mismatch,U->C,CmoA/CmoB,conditional
+Escherichia coli,Pro,UGG,34,cmo5U,uridine 5-oxyacetic acid,cmo5U,mismatch,U->C,CmoA/CmoB,conditional
+Escherichia coli,Thr,UGU,34,cmo5U,uridine 5-oxyacetic acid,cmo5U,mismatch,U->C,CmoA/CmoB,conditional
+Escherichia coli,Glu,UUC,34,mnm5s2U,5-methylaminomethyl-2-thiouridine,mnm5s2U,combined,U->C,MnmE/MnmG/MnmA,conditional
+Escherichia coli,Lys,UUU,34,mnm5s2U,5-methylaminomethyl-2-thiouridine,mnm5s2U,combined,U->C,MnmE/MnmG/MnmA,conditional
+Escherichia coli,Gln,UUG,34,mnm5s2U,5-methylaminomethyl-2-thiouridine,mnm5s2U,combined,U->C,MnmE/MnmG/MnmA,conditional
+Escherichia coli,Arg,UCU,34,mnm5U,5-methylaminomethyluridine,mnm5U,mismatch,U->C,MnmE/MnmG,conditional
+Escherichia coli,Gly,UCC,34,mnm5U,5-methylaminomethyluridine,mnm5U,mismatch,U->C,MnmE/MnmG,conditional
+Escherichia coli,Leu,CAA,37,m1G,1-methylguanosine,K,rt_stop,,TrmD,conditional
+Escherichia coli,Pro,GGG,37,m1G,1-methylguanosine,K,rt_stop,,TrmD,conditional
+Escherichia coli,all,all,37,ms2i6A,2-methylthio-N6-isopentenyladenosine,ms2i6A,combined,A->G,MiaA/MiaB,conditional
+Escherichia coli,all,all,37,i6A,N6-isopentenyladenosine,i6A,mismatch,A->G,MiaA,conditional
+Escherichia coli,all,all,37,t6A,N6-threonylcarbamoyladenosine,t6A,mismatch,A->T,TsaC/TsaD/TsaB/TsaE,conditional
+Escherichia coli,all,all,38,Psi,pseudouridine,P,silent,,TruA,frequent
+Escherichia coli,all,all,39,Psi,pseudouridine,P,silent,,TruA,frequent
+Escherichia coli,all,all,40,Psi,pseudouridine,P,silent,,TruA,frequent
+Escherichia coli,all,all,46,m7G,7-methylguanosine,7,mismatch,G->A,TrmB,universal
+Escherichia coli,Gln,CUG,32,s2C,2-thiocytidine,s2C,mismatch,C->U,TtcA,conditional
+Escherichia coli,Arg,ICG,34,I,inosine,I,mismatch,A->G,TadA,conditional
+Escherichia coli,all,all,54,m5U,5-methyluridine (ribothymidine),T,silent,,TrmA,universal
+Escherichia coli,all,all,55,Psi,pseudouridine,P,silent,,TruB,universal
+Escherichia coli,all,all,58,m1A,1-methyladenosine,m1A,combined,A->any,,rare
+Escherichia coli,fMet,CAT,58,m1A,1-methyladenosine,m1A,combined,A->any,,conditional
+Escherichia coli,all,all,65,Psi,pseudouridine,P,silent,,TruC,frequent
