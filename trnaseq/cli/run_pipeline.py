@@ -16,10 +16,11 @@ Combines all preprocessing and analysis steps into a single script:
 Output:
 - inp_file_df.xlsx (input file summary)
 - sample_df.xlsx (sample information with QC metrics)
-- ALL_stats_aggregate.csv (combined statistics for charge quantification)
+- data/stats_collection/ALL_stats_aggregate.csv (combined statistics)
 - charge_analysis/ (charge quantification results, if enabled)
+- fragment_analysis/ (fragment classification + RT drop-off, if enabled)
+- qc_reports/ (QC dashboard, if enabled)
 - parquet_data/ (parquet-format data, if enabled)
-- QC_summary.csv, QC_report.html (QC dashboard, if enabled)
 
 Usage:
     python -m trnaseq pipeline \
@@ -75,6 +76,12 @@ try:
     QC_AVAILABLE = True
 except ImportError:
     QC_AVAILABLE = False
+
+try:
+    from trnaseq.fragments import FragmentAnalyser
+    FRAGMENTS_AVAILABLE = True
+except ImportError:
+    FRAGMENTS_AVAILABLE = False
 
 try:
     from trnaseq.modifications.positional import PositionalExtractor
@@ -569,6 +576,52 @@ class PreprocessingPipeline:
             import traceback
             self.log(traceback.format_exc(), level="ERROR")
 
+    def _run_fragment_analysis(self):
+        """Run fragment analysis as part of stage 3.
+
+        Reads per-sample stats CSVs and classifies reads into fragment
+        types, profiles RT drop-off positions, and computes length
+        distributions.
+        """
+        if not FRAGMENTS_AVAILABLE:
+            self.log("  Fragment analysis skipped (module not available)", level="WARN")
+            return
+
+        stats_dir = self.project_dir / 'data' / 'stats_collection'
+        if not stats_dir.exists():
+            self.log("  Fragment analysis skipped (no stats_collection dir)", level="WARN")
+            return
+
+        sample_names = self.sample_df['sample_name_unique'].tolist()
+        self.log(f"  Running fragment analysis ({len(sample_names)} samples)...")
+
+        try:
+            analyser = FragmentAnalyser(
+                stats_dir=stats_dir,
+                sample_names=sample_names,
+                min_reads=self.config.get('fragment_min_reads', 10),
+            )
+            analyser.run()
+
+            frag_dir = self.project_dir / 'fragment_analysis'
+            write_csv = self.config.get('fragment_write_csv', False)
+            analyser.export(frag_dir, write_csv=write_csv)
+
+            summary = analyser._summary
+            if summary is not None and not summary.empty:
+                for _, row in summary.iterrows():
+                    self.log(f"    {row['sample_name_unique']}: "
+                             f"{row['pct_full_length']:.1f}% full-length, "
+                             f"{row['pct_rt_dropoff']:.1f}% RT drop-off")
+
+            self._fragment_analysis_ran = True
+            self.log("  Fragment analysis complete!")
+
+        except Exception as e:
+            self.log(f"  ERROR in fragment analysis: {e}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="ERROR")
+
     def stage_4_parquet_storage(self):
         """Stage 4: Parquet Storage (optional)"""
         self.log("=" * 60)
@@ -620,6 +673,16 @@ class PreprocessingPipeline:
                     out_path = charge_parquet_dir / csv_file.with_suffix('.parquet').name
                     df.to_parquet(out_path, compression=compression)
                     self.log(f"    Saved: {out_path.name}")
+
+            # Copy fragment parquet files into parquet_data/fragments/
+            frag_dir = self.project_dir / 'fragment_analysis'
+            if frag_dir.exists():
+                frag_parquet_dir = parquet_dir / 'fragments'
+                frag_parquet_dir.mkdir(parents=True, exist_ok=True)
+                for pq_file in frag_dir.glob('*.parquet'):
+                    import shutil
+                    shutil.copy(pq_file, frag_parquet_dir / pq_file.name)
+                    self.log(f"  Copied fragment: {pq_file.name}")
 
             self.status['stages_completed'].append('4')
             self.log("  Parquet conversion complete!")
@@ -676,15 +739,17 @@ class PreprocessingPipeline:
                 bc_dir=self.project_dir / 'data' / 'BC_split',
             )
 
-            # QC_summary.csv
-            summary_path = self.project_dir / 'QC_summary.csv'
-            qc_summary = qc.save_summary_csv(summary_path)
-            self.log(f"  Saved: {summary_path.name} ({len(qc_summary)} samples)")
+            # QC outputs go into qc_reports/
+            qc_dir = self.project_dir / 'qc_reports'
+            qc_dir.mkdir(exist_ok=True)
 
-            # QC_report.html
-            report_path = self.project_dir / 'QC_report.html'
+            summary_path = qc_dir / 'QC_summary.csv'
+            qc_summary = qc.save_summary_csv(summary_path)
+            self.log(f"  Saved: qc_reports/{summary_path.name} ({len(qc_summary)} samples)")
+
+            report_path = qc_dir / 'QC_report.html'
             qc.generate_html_report(report_path)
-            self.log(f"  Saved: {report_path.name}")
+            self.log(f"  Saved: qc_reports/{report_path.name}")
 
             self.status['stages_completed'].append('5')
             self.log("  QC report generation complete!")
@@ -872,27 +937,17 @@ class PreprocessingPipeline:
         self.sample_df.to_excel(sample_df_output, index=False)
         self.log(f"  Saved: {sample_df_output}")
 
-        # ALL_stats_aggregate.csv should already be in stats_collection/
+        # ALL_stats_aggregate.csv lives in data/stats_collection/ (no root copy)
         stats_file = self.project_dir / 'data' / 'stats_collection' / 'ALL_stats_aggregate.csv'
         if stats_file.exists():
-            # Copy to output root for easy access
-            import shutil
-            shutil.copy(stats_file, self.project_dir / 'ALL_stats_aggregate.csv')
-            self.log(f"  Saved: ALL_stats_aggregate.csv")
+            self.log(f"  Stats: data/stats_collection/ALL_stats_aggregate.csv")
         else:
             self.log(f"  WARNING: ALL_stats_aggregate.csv not found", level="WARN")
 
-        # Copy charge analysis results to output root
+        # Charge results live in charge_analysis/ (no root copies)
         if hasattr(self, 'charge_results') and self.charge_results:
-            charge_dir = self.project_dir / 'charge_analysis'
-            for level, df in self.charge_results.items():
-                output_file = self.project_dir / f'charge_df_{level}.csv'
-                import shutil
-                shutil.copy(
-                    charge_dir / f'charge_df_{level}.csv',
-                    output_file
-                )
-                self.log(f"  Saved: {output_file.name}")
+            for level in self.charge_results:
+                self.log(f"  Charge: charge_analysis/charge_df_{level}.csv")
 
     @staticmethod
     def parse_stages(stages_str):
@@ -1073,6 +1128,14 @@ class PreprocessingPipeline:
                 else:
                     self.log("Skipping Stage 3: Charge Quantification (disabled in config)")
 
+                # Fragment analysis (part of stage 3)
+                if self.config.get('run_fragment_analysis', True):
+                    t0 = time.time()
+                    self._run_fragment_analysis()
+                    self.stage_timings['stage_3_fragments'] = time.time() - t0
+                else:
+                    self.log("Skipping fragment analysis (disabled in config)")
+
             if '4' in stages:
                 if self.config.get('run_parquet_storage', False):
                     t0 = time.time()
@@ -1128,18 +1191,18 @@ class PreprocessingPipeline:
             self.log(f"Output files:")
             self.log(f"  - inp_file_df.xlsx")
             self.log(f"  - sample_df.xlsx")
-            self.log(f"  - ALL_stats_aggregate.csv")
+            self.log(f"  - data/stats_collection/ALL_stats_aggregate.csv")
 
             # List charge results if generated
             if '3' in self.status['stages_completed']:
-                self.log(f"  - charge_df_transcript.csv")
-                self.log(f"  - charge_df_codon.csv")
-                self.log(f"  - charge_df_aa.csv")
-                self.log(f"  - charge_summary.csv")
+                self.log(f"  - charge_analysis/charge_df_*.csv")
+                self.log(f"  - charge_analysis/charge_summary.csv")
+                if hasattr(self, '_fragment_analysis_ran'):
+                    self.log(f"  - fragment_analysis/*.parquet")
 
             if '5' in self.status['stages_completed']:
-                self.log(f"  - QC_summary.csv")
-                self.log(f"  - QC_report.html")
+                self.log(f"  - qc_reports/QC_summary.csv")
+                self.log(f"  - qc_reports/QC_report.html")
 
             self.log(f"  - computing_metrics.csv")
             self.log("")

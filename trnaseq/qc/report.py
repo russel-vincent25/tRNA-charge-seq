@@ -110,7 +110,9 @@ class QCReportGenerator:
         """Write QC_summary.csv and return the DataFrame."""
         summary = self.build_summary()
         if output_path is None:
-            output_path = self.project_dir / 'QC_summary.csv'
+            qc_dir = self.project_dir / 'qc_reports'
+            qc_dir.mkdir(exist_ok=True)
+            output_path = qc_dir / 'QC_summary.csv'
         summary.to_csv(output_path, index=False)
         return summary
 
@@ -122,7 +124,9 @@ class QCReportGenerator:
         """Generate self-contained interactive HTML dashboard."""
         summary = self.build_summary()
         if output_path is None:
-            output_path = self.project_dir / 'QC_report.html'
+            qc_dir = self.project_dir / 'qc_reports'
+            qc_dir.mkdir(exist_ok=True)
+            output_path = qc_dir / 'QC_report.html'
 
         panels = []
 

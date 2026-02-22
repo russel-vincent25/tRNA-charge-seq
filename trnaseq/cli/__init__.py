@@ -66,6 +66,10 @@ def main(argv=None):
     from trnaseq.cli.commands.modifications import add_modifications_parser
     add_modifications_parser(subparsers)
 
+    # --- fragments subcommand ---
+    from trnaseq.cli.commands.fragments import add_fragments_parser
+    add_fragments_parser(subparsers)
+
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -74,7 +78,7 @@ def main(argv=None):
 
     if args.command == 'pipeline':
         _run_pipeline(args, pipeline_parser)
-    elif args.command in ('quantify', 'view', 'abundance', 'modifications'):
+    elif args.command in ('quantify', 'view', 'abundance', 'modifications', 'fragments'):
         args.func(args)
 
 
