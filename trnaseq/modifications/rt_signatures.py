@@ -358,19 +358,40 @@ class RTSignatureAnalyzer:
         Returns:
             DataFrame with flagged signature positions and evidence
         """
+        # Guard against empty DataFrames (all positions below min_coverage)
+        _gap = (
+            gap_df[['position', 'gap_rate']]
+            if not gap_df.empty and 'position' in gap_df.columns
+            else pd.DataFrame(columns=['position', 'gap_rate'])
+        )
+        _rt = (
+            rt_stop_df[['position', 'rt_stop_pct']]
+            if not rt_stop_df.empty and 'position' in rt_stop_df.columns
+            else pd.DataFrame(columns=['position', 'rt_stop_pct'])
+        )
+        if mismatch_df.empty or 'position' not in mismatch_df.columns:
+            mismatch_df = pd.DataFrame(columns=[
+                'position', 'coverage', 'correct_nt', 'correct_count',
+                'mismatch_count', 'mismatch_rate',
+            ])
+
         # Merge all data
         merged = mismatch_df.merge(
-            gap_df[['position', 'gap_rate']],
-            on='position',
-            how='outer'
+            _gap, on='position', how='outer'
         ).merge(
-            rt_stop_df[['position', 'rt_stop_pct']],
-            on='position',
-            how='outer'
+            _rt, on='position', how='outer'
         )
 
         # Fill NaN values
         merged = merged.fillna(0)
+
+        # If completely empty, return with expected columns
+        if merged.empty:
+            for col in ['mismatch_rate', 'rt_stop_pct', 'gap_rate',
+                        'has_mismatch_signature', 'has_rt_stop',
+                        'has_gap_signature', 'has_signature']:
+                merged[col] = pd.Series(dtype='float64')
+            return merged
 
         # Flag positions based on thresholds
         merged['has_mismatch_signature'] = merged['mismatch_rate'] >= self.mismatch_threshold

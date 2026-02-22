@@ -80,10 +80,11 @@ def run_modifications(args):
             sample_names = sample_df.iloc[:, 0].tolist()
     else:
         # Auto-detect from JSON files
+        # .name is e.g. '0p_SWalign.json.bz2' — strip both suffixes + _SWalign
         sample_names = [
-            p.stem.replace('_SWalign', '')
+            p.name.replace('_SWalign.json.bz2', '')
             for p in json_dir.glob('*_SWalign.json.bz2')
-            if not p.stem.startswith('common-seqs')
+            if not p.name.startswith('common-seqs')
         ]
 
     print(f"Found {len(sample_names)} samples")
