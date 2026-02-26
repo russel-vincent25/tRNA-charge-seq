@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Stage 2 (Stats Collection) + Stage 3 (Charge Quantification) + Stage 5 (QC)
+# Stage 2 (Stats) + Stage 3 (Charge) + Stage 5 (QC) + Stage 6 (Modifications)
 # Aggregation step — processes ALL samples together.
-# Reads per-sample alignment JSONs, computes stats, charge, and QC report.
+# Reads per-sample alignment JSONs, computes stats, charge, QC, and modifications.
 
 #SBATCH --cpus-per-task=16
 #SBATCH -p short
@@ -10,16 +10,16 @@
 #SBATCH --mem=32G
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=russel_vincent@hms.harvard.edu
-#SBATCH --job-name=tseq-235
-#SBATCH -o /home/ruv988/jobOutput/tseq-235_%j.out
-#SBATCH -e /home/ruv988/jobOutput/tseq-235_%j.err
+#SBATCH --job-name=tseq-2356
+#SBATCH -o /home/ruv988/jobOutput/tseq-2356_%j.out
+#SBATCH -e /home/ruv988/jobOutput/tseq-2356_%j.err
 
 set -euo pipefail
 
 CONFIG="$1"
 PROJECT_DIR="$2"
 
-echo "=== tRNA-charge-seq: Stage 2 + 3 + 5 ==="
+echo "=== tRNA-charge-seq: Stage 2 + 3 + 5 + 6 ==="
 echo "Config:  $CONFIG"
 echo "Project: $PROJECT_DIR"
 echo "Node:    $(hostname)"
@@ -35,10 +35,10 @@ python -m trnaseq pipeline \
     --config "$CONFIG" \
     --project-dir "$PROJECT_DIR" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-16}" \
-    --stages 2,3,5
+    --stages 2,3,5,6
 
 if [ $? -ne 0 ]; then
-    echo "Error: Stages 2+3+5 failed" >&2
+    echo "Error: Stages 2+3+5+6 failed" >&2
     exit 1
 fi
 

@@ -6,7 +6,7 @@
 # This script runs on the LOGIN NODE. It submits 3 sbatch jobs that execute
 # on compute nodes with dependency chaining:
 #
-#   JOB0 (stage0ab.job)  →  JOB1 (stage0c_1.job, array)  →  JOB2 (stage2_5.job)
+#   JOB0 (stage0ab.job)  →  JOB1 (stage0c_1.job, array)  →  JOB2 (stage2_6.job)
 #
 # Usage:
 #   bash submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_concurrent]
@@ -84,16 +84,16 @@ CPUS_0C1=2
 TIME_0C1="08:00:00"
 MEM_0C1="2G"
 
-# Stage 2+3+5: aggregation; I/O-bound (reading JSONs, writing CSVs)
+# Stage 2+3+5+6: aggregation; I/O-bound (reading JSONs, writing CSVs)
 # 42 min for 24 samples with 4 CPUs → scales ~linearly with N_SAMPLES/CPUS
 # 16 CPUs keeps 264 samples under 4h; RAM scales with sample count
-CPUS_235=16
-if [ $N_SAMPLES -lt 64 ]; then MEM_235="16G"; else MEM_235="32G"; fi
+CPUS_2356=16
+if [ $N_SAMPLES -lt 64 ]; then MEM_2356="16G"; else MEM_2356="32G"; fi
 # ~1.75 min per sample per CPU → estimate wall time, minimum 1h, cap 12h
-TIME_235_MIN=$(( (N_SAMPLES * 2 / CPUS_235 + 1) * 3 ))
-if [ $TIME_235_MIN -lt 60 ]; then TIME_235_MIN=60; fi
-if [ $TIME_235_MIN -gt 720 ]; then TIME_235_MIN=720; fi
-TIME_235=$(printf "%02d:%02d:00" $((TIME_235_MIN / 60)) $((TIME_235_MIN % 60)))
+TIME_2356_MIN=$(( (N_SAMPLES * 2 / CPUS_2356 + 1) * 3 ))
+if [ $TIME_2356_MIN -lt 60 ]; then TIME_2356_MIN=60; fi
+if [ $TIME_2356_MIN -gt 720 ]; then TIME_2356_MIN=720; fi
+TIME_2356=$(printf "%02d:%02d:00" $((TIME_2356_MIN / 60)) $((TIME_2356_MIN % 60)))
 
 echo "=============================================================="
 echo "tRNA-charge-seq SLURM Pipeline"
@@ -108,7 +108,7 @@ echo ""
 echo "Resource plan:"
 echo "  Stage 0ab:  ${CPUS_0AB} CPUs, ${MEM_0AB} mem, ${TIME_0AB} time (${N_JOBS_0AB} jobs × ${THREADS_PER_JOB} threads)"
 echo "  Stage 0c+1: ${CPUS_0C1} CPUs, ${MEM_0C1} mem, ${TIME_0C1} time (1 job × ${CPUS_0C1} threads) × ${N_SAMPLES} tasks"
-echo "  Stage 2+3+5: ${CPUS_235} CPUs, ${MEM_235} mem, ${TIME_235} time"
+echo "  Stage 2+3+5+6: ${CPUS_2356} CPUs, ${MEM_2356} mem, ${TIME_2356} time"
 echo "=============================================================="
 
 # --- Job 0: Stages 0a + 0b (merge + BC split) ---
@@ -127,13 +127,13 @@ JOB1=$(sbatch --parsable \
     "${SCRIPT_DIR}/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
 echo "  JOB1 (stages 0c+1):   $JOB1  [array 0-${MAX_ARRAY_IDX}%${MAX_CONCURRENT}]"
 
-# --- Job 2: Stages 2 + 3 + 5 (aggregation) ---
-# Single job: stats collection + charge quantification + QC report
+# --- Job 2: Stages 2 + 3 + 5 + 6 (aggregation) ---
+# Single job: stats + charge + fragments + QC + modifications
 JOB2=$(sbatch --parsable \
     --dependency=afterok:${JOB1} \
-    --cpus-per-task=$CPUS_235 --mem=${MEM_235} -t ${TIME_235} \
-    "${SCRIPT_DIR}/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
-echo "  JOB2 (stages 2+3+5):  $JOB2"
+    --cpus-per-task=$CPUS_2356 --mem=${MEM_2356} -t ${TIME_2356} \
+    "${SCRIPT_DIR}/stage2_6.job" "$CONFIG" "$PROJECT_DIR")
+echo "  JOB2 (stages 2+3+5+6):  $JOB2"
 
 echo ""
 echo "Pipeline submitted! Monitor with:"
