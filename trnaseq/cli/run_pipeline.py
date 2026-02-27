@@ -100,6 +100,17 @@ _PATH_FIELDS = ['sample_list', 'index_list', 'SWIPE_score_mat', 'common_seqs', '
 _DICT_PATH_FIELDS = ['tRNA_database']  # dict values are paths
 
 
+def _save_df(df, path_stem, write_csv=False):
+    """Save DataFrame as parquet with CSV fallback."""
+    try:
+        df.to_parquet(f'{path_stem}.parquet', index=False)
+    except Exception:
+        df.to_csv(f'{path_stem}.csv', index=False)
+        return
+    if write_csv:
+        df.to_csv(f'{path_stem}.csv', index=False)
+
+
 class PreprocessingPipeline:
     """
     Unified preprocessing pipeline for tRNA-charge-seq
@@ -823,8 +834,8 @@ class PreprocessingPipeline:
                 sample_dir = output_dir / sample_name
                 sample_dir.mkdir(exist_ok=True)
 
-                rt_profile.to_parquet(sample_dir / 'rt_profile.parquet', index=False)
-                mm_profile.to_parquet(sample_dir / 'mismatch_profile.parquet', index=False)
+                _save_df(rt_profile, sample_dir / 'rt_profile')
+                _save_df(mm_profile, sample_dir / 'mismatch_profile')
 
                 self.log(f"  {sample_name}: {len(pscm_dict)} tRNAs processed")
 
