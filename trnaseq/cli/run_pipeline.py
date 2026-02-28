@@ -86,11 +86,21 @@ except ImportError:
 try:
     from trnaseq.modifications.positional import PositionalExtractor
     from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
-    from trnaseq.modifications.modification_caller import ModificationCaller
+    from trnaseq.modifications.modification_caller import (
+        ModificationCaller,
+        estimate_background_error_rate,
+        ReplicateAggregator,
+    )
     from trnaseq.modifications.modomics import MODOMICSAnnotator
     MODIFICATIONS_AVAILABLE = True
 except ImportError:
     MODIFICATIONS_AVAILABLE = False
+
+try:
+    from trnaseq.qc.modification_report import ModificationReportGenerator
+    MOD_REPORT_AVAILABLE = True
+except ImportError:
+    MOD_REPORT_AVAILABLE = False
 
 
 # ------------------------------------------------------------------
@@ -109,6 +119,26 @@ def _save_df(df, path_stem, write_csv=False):
         return
     if write_csv:
         df.to_csv(f'{path_stem}.csv', index=False)
+
+
+def _pool_pscm_dicts(all_pscm):
+    """Sum PSCM arrays across all samples for background estimation.
+
+    Args:
+        all_pscm: {sample_name: {trna_name: ndarray(ref_len, 8)}}
+
+    Returns:
+        {trna_name: ndarray(ref_len, 8)} — element-wise sum across samples.
+    """
+    pooled = {}
+    for sample_pscm in all_pscm.values():
+        for trna_name, mat in sample_pscm.items():
+            if trna_name not in pooled:
+                pooled[trna_name] = mat.copy()
+            else:
+                if pooled[trna_name].shape == mat.shape:
+                    pooled[trna_name] += mat
+    return pooled
 
 
 class PreprocessingPipeline:
@@ -773,9 +803,13 @@ class PreprocessingPipeline:
     def stage_6_modification_analysis(self):
         """Stage 6: Modification Analysis (optional)
 
-        Per-position RT signature extraction, MODOMICS annotation, and
-        optional novel modification discovery.  Requires SWalign JSONs from
-        stage 1.
+        Six phases:
+        1. PSCM extraction (per-sample positional count matrices)
+        2. Background error-rate estimation (synthetic spike-ins or empirical)
+        3. Per-sample modification calling (RT signatures + binomial test)
+        4. Replicate aggregation (Fisher combined p-value + consensus sieve)
+        5. Summary CSV (one row per sample)
+        6. QC report (interactive HTML dashboard)
         """
         self.log("=" * 60)
         self.log("Stage 6: Modification Analysis")
@@ -787,7 +821,7 @@ class PreprocessingPipeline:
             return
 
         try:
-            # Determine reference FASTA (first species in tRNA_database config)
+            # ---- Config ----
             tRNA_database = self.config['tRNA_database']
             ref_fasta = list(tRNA_database.values())[0]
 
@@ -795,6 +829,11 @@ class PreprocessingPipeline:
             min_coverage = self.config.get('modification_min_coverage', 50)
             discover_novel = self.config.get('discover_novel_modifications', False)
             use_api = not self.config.get('no_modomics', True)
+            min_replicates = self.config.get('modification_min_replicates', 3)
+            mod_alpha = self.config.get('modification_alpha', 0.01)
+            synthetic_prefixes = tuple(
+                self.config.get('synthetic_tRNA_prefixes', ['Synthetic_'])
+            )
 
             json_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
             output_dir = self.project_dir / 'modification_analysis'
@@ -807,23 +846,41 @@ class PreprocessingPipeline:
             self.log(f"  Samples: {len(sample_names)}")
             self.log(f"  Novel discovery: {discover_novel}")
 
-            # Extract PSCMs
+            # ==== Phase 1: PSCM extraction ====
+            self.log("  Phase 1/6: Extracting PSCMs...")
             extractor = PositionalExtractor(ref_fasta)
             all_pscm = extractor.run_parallel(
                 json_dir, sample_names, n_jobs=self.n_jobs
             )
+
+            # ==== Phase 2: Background estimation ====
+            self.log("  Phase 2/6: Estimating background error rate...")
+            pooled = _pool_pscm_dicts(all_pscm)
+            bg_rate, bg_source = estimate_background_error_rate(
+                pooled, extractor.ref_dict,
+                synthetic_prefixes=synthetic_prefixes,
+                min_coverage=min_coverage,
+            )
+            self.log(f"  Background error rate: {bg_rate:.5f} (source: {bg_source})")
 
             # MODOMICS
             annotator = MODOMICSAnnotator(organism)
             mods_df = annotator.get_modifications(use_api=use_api)
             self.log(f"  Loaded {len(mods_df)} known modification entries")
 
-            # Analyze each sample
+            # ==== Phase 3: Per-sample calling ====
+            self.log("  Phase 3/6: Calling modifications per sample...")
             analyzer = RTSignatureAnalyzer(
                 min_coverage=min_coverage, verbose=False
             )
             analyzer.load_reference(ref_fasta)
-            caller = ModificationCaller(organism=organism)
+            caller = ModificationCaller(
+                organism=organism,
+                background_error_rate=bg_rate,
+                alpha=mod_alpha,
+            )
+
+            per_sample_calls = {}
 
             for sample_name, pscm_dict in all_pscm.items():
                 pscm_dfs = analyzer.load_pscm_from_positional(pscm_dict)
@@ -837,7 +894,122 @@ class PreprocessingPipeline:
                 _save_df(rt_profile, sample_dir / 'rt_profile')
                 _save_df(mm_profile, sample_dir / 'mismatch_profile')
 
-                self.log(f"  {sample_name}: {len(pscm_dict)} tRNAs processed")
+                # Call modifications for each tRNA in this sample
+                sample_calls = []
+                for trna_name, pscm_df in pscm_dfs.items():
+                    rt_counts = pscm_dict[trna_name][:, 7]
+                    analysis = analyzer.analyze_trna_with_actual_stops(
+                        trna_name, pscm_df, rt_stop_counts=rt_counts,
+                    )
+                    ref_seq = analyzer.reference_sequences.get(trna_name, {}).get('seq')
+                    calls_df = caller.call_all(
+                        trna_name,
+                        analysis['signatures'],
+                        pscm_df,
+                        ref_seq,
+                        discover_novel=discover_novel,
+                        min_coverage=min_coverage,
+                    )
+                    if not calls_df.empty:
+                        sample_calls.append(calls_df)
+
+                if sample_calls:
+                    combined = pd.concat(sample_calls, ignore_index=True)
+                    per_sample_calls[sample_name] = combined
+                    _save_df(combined, sample_dir / 'modification_calls')
+                    self.log(f"  {sample_name}: {len(combined)} calls "
+                             f"({len(pscm_dict)} tRNAs)")
+                else:
+                    per_sample_calls[sample_name] = pd.DataFrame()
+                    self.log(f"  {sample_name}: 0 calls ({len(pscm_dict)} tRNAs)")
+
+            # ==== Phase 4: Replicate aggregation ====
+            self.log("  Phase 4/6: Aggregating across replicates...")
+            replicate_groups = {}
+            if 'sample_name' in self.sample_df.columns:
+                for _, row in self.sample_df.iterrows():
+                    snu = row['sample_name_unique']
+                    sn = str(row['sample_name'])
+                    replicate_groups.setdefault(sn, []).append(snu)
+
+            aggregated_calls = pd.DataFrame()
+            consensus_calls = pd.DataFrame()
+
+            if replicate_groups:
+                aggregator = ReplicateAggregator(
+                    min_replicates=min_replicates, alpha=mod_alpha
+                )
+                aggregated_calls = aggregator.aggregate(
+                    per_sample_calls, replicate_groups
+                )
+                if not aggregated_calls.empty:
+                    _save_df(aggregated_calls,
+                             output_dir / 'aggregated_modifications')
+                    consensus_calls = aggregated_calls[
+                        aggregated_calls['consensus_call']
+                    ].copy()
+                    _save_df(consensus_calls,
+                             output_dir / 'consensus_modifications')
+                    self.log(f"  Aggregated: {len(aggregated_calls)} sites, "
+                             f"{len(consensus_calls)} consensus")
+                else:
+                    self.log("  No aggregated modification calls.")
+            else:
+                self.log("  No replicate groups found — skipping aggregation.")
+
+            # ==== Phase 5: Summary CSV ====
+            self.log("  Phase 5/6: Generating modification summary...")
+            summary_rows = []
+            for snu in sample_names:
+                sc = per_sample_calls.get(snu, pd.DataFrame())
+                n_total = len(sc)
+                n_consensus = 0
+                if not consensus_calls.empty and not sc.empty:
+                    consensus_sites = set(
+                        zip(consensus_calls.get('trna_name', []),
+                            consensus_calls.get('position', []))
+                    )
+                    sample_sites = set(zip(sc['trna_name'], sc['position']))
+                    n_consensus = len(sample_sites & consensus_sites)
+
+                mean_fc = float(sc['fold_change'].mean()) if (
+                    not sc.empty and 'fold_change' in sc.columns
+                ) else np.nan
+
+                summary_rows.append({
+                    'sample_name_unique': snu,
+                    'total_calls': n_total,
+                    'consensus_calls': n_consensus,
+                    'mean_fold_change': round(mean_fc, 3) if not np.isnan(mean_fc) else np.nan,
+                    'background_error_rate': bg_rate,
+                    'bg_source': bg_source,
+                })
+
+            summary_df = pd.DataFrame(summary_rows)
+            summary_df.to_csv(output_dir / 'modification_summary.csv', index=False)
+            self.log(f"  Saved modification_summary.csv ({len(summary_df)} rows)")
+
+            # ==== Phase 6: QC report ====
+            self.log("  Phase 6/6: Generating modification QC report...")
+            if MOD_REPORT_AVAILABLE:
+                try:
+                    report_gen = ModificationReportGenerator(
+                        per_sample_calls=per_sample_calls,
+                        aggregated_calls=aggregated_calls if not aggregated_calls.empty else None,
+                        consensus_calls=consensus_calls if not consensus_calls.empty else None,
+                        replicate_groups=replicate_groups if replicate_groups else None,
+                        ref_dict=extractor.ref_dict,
+                        summary_df=summary_df,
+                    )
+                    report_path = report_gen.generate_html_report(
+                        output_dir / 'modification_report.html'
+                    )
+                    self.log(f"  Saved modification report: {report_path}")
+                except Exception as report_err:
+                    self.log(f"  WARNING: Could not generate modification report: "
+                             f"{report_err}", level="WARN")
+            else:
+                self.log("  Modification report generator not available — skipping.")
 
             self.status['stages_completed'].append('6')
             self.log("  Modification analysis complete!")

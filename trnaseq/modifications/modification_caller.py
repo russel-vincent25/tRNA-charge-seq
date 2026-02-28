@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from scipy.stats import binomtest
+from scipy.stats import binomtest, combine_pvalues
 
 
 @dataclass
@@ -144,6 +144,83 @@ MODIFICATION_PROFILES = {
 }
 
 
+def estimate_background_error_rate(
+    pscm_dict: Dict[str, np.ndarray],
+    ref_dict: Dict[str, dict],
+    synthetic_prefixes: Tuple[str, ...] = ('Synthetic_',),
+    min_coverage: int = 50,
+) -> Tuple[float, str]:
+    """Estimate background sequencing error rate from PSCM data.
+
+    Strategy:
+    1. If synthetic (spike-in) tRNAs are present, use their mismatch rates
+       (weighted by coverage) as the background — these have no modifications.
+    2. Fallback: compute per-position mismatch rate across ALL tRNAs and
+       take the 25th percentile (most positions are unmodified).
+    3. Floor the result at 0.001 to avoid zero-division in fold-change.
+
+    Args:
+        pscm_dict: {trna_name: ndarray(ref_len, 8)} — columns are
+            A, C, G, T, N, gap, coverage, rt_stop.
+        ref_dict: {trna_name: {'seq': str, 'seq_len': int}}.
+        synthetic_prefixes: FASTA name prefixes that identify synthetic tRNAs.
+        min_coverage: Ignore positions with coverage below this threshold.
+
+    Returns:
+        (error_rate, source) where source is 'synthetic' or 'empirical_q25'.
+    """
+    _NT_IDX = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+    FLOOR = 0.001
+
+    # --- Try synthetic tRNAs first ---
+    total_mismatches = 0
+    total_coverage = 0
+    for trna_name, mat in pscm_dict.items():
+        if not any(trna_name.startswith(p) for p in synthetic_prefixes):
+            continue
+        if trna_name not in ref_dict:
+            continue
+        ref_seq = ref_dict[trna_name]['seq'].upper()
+        for pos_idx in range(mat.shape[0]):
+            cov = mat[pos_idx, 6]  # coverage column
+            if cov < min_coverage:
+                continue
+            ref_nt = ref_seq[pos_idx] if pos_idx < len(ref_seq) else 'N'
+            if ref_nt not in _NT_IDX:
+                continue
+            correct = mat[pos_idx, _NT_IDX[ref_nt]]
+            mis = cov - correct
+            total_mismatches += max(0, mis)
+            total_coverage += cov
+
+    if total_coverage > 0:
+        rate = total_mismatches / total_coverage
+        return (max(FLOOR, rate), 'synthetic')
+
+    # --- Fallback: 25th percentile of all positions ---
+    rates = []
+    for trna_name, mat in pscm_dict.items():
+        if trna_name not in ref_dict:
+            continue
+        ref_seq = ref_dict[trna_name]['seq'].upper()
+        for pos_idx in range(mat.shape[0]):
+            cov = mat[pos_idx, 6]
+            if cov < min_coverage:
+                continue
+            ref_nt = ref_seq[pos_idx] if pos_idx < len(ref_seq) else 'N'
+            if ref_nt not in _NT_IDX:
+                continue
+            correct = mat[pos_idx, _NT_IDX[ref_nt]]
+            mis = cov - correct
+            rates.append(max(0, mis) / cov)
+
+    if rates:
+        q25 = float(np.percentile(rates, 25))
+        return (max(FLOOR, q25), 'empirical_q25')
+
+    return (FLOOR, 'empirical_q25')
+
+
 class ModificationCaller:
     """
     Call specific tRNA modifications based on RT signature patterns.
@@ -172,7 +249,8 @@ class ModificationCaller:
         min_confidence: float = 0.5,
         use_position_priors: bool = True,
         statistical_test: bool = True,
-        alpha: float = 0.01
+        alpha: float = 0.01,
+        background_error_rate: float = 0.01,
     ):
         """
         Initialize modification caller.
@@ -183,12 +261,16 @@ class ModificationCaller:
             use_position_priors: Use known modification positions to boost confidence
             statistical_test: Perform binomial test for significance
             alpha: Significance level for statistical test
+            background_error_rate: Expected sequencing error rate for binomial
+                test and fold-change computation. Use
+                :func:`estimate_background_error_rate` to set empirically.
         """
         self.organism = organism
         self.min_confidence = min_confidence
         self.use_position_priors = use_position_priors
         self.statistical_test = statistical_test
         self.alpha = alpha
+        self.background_error_rate = background_error_rate
 
         # Load modification profiles
         self.profiles = MODIFICATION_PROFILES
@@ -319,7 +401,7 @@ class ModificationCaller:
         self,
         coverage: int,
         mismatch_count: int,
-        expected_error_rate: float = 0.01
+        expected_error_rate: float = None,
     ) -> float:
         """
         Perform binomial test to check if mismatch rate is significantly elevated.
@@ -327,11 +409,14 @@ class ModificationCaller:
         Args:
             coverage: Total read coverage
             mismatch_count: Number of mismatches observed
-            expected_error_rate: Expected sequencing error rate (default 1%)
+            expected_error_rate: Expected sequencing error rate. If *None*,
+                uses ``self.background_error_rate``.
 
         Returns:
             P-value from binomial test
         """
+        if expected_error_rate is None:
+            expected_error_rate = self.background_error_rate
         if coverage == 0:
             return 1.0
 
@@ -427,7 +512,11 @@ class ModificationCaller:
                     'coverage': coverage,
                     'pattern_fraction': pattern_fraction,
                     'pvalue': pvalue,
-                    'in_typical_position': position in profile.typical_positions
+                    'in_typical_position': position in profile.typical_positions,
+                    'fold_change': (mismatch_rate / self.background_error_rate
+                                    if self.background_error_rate > 0
+                                    else np.nan),
+                    'background_error_rate': self.background_error_rate,
                 }
                 calls.append(call)
 
@@ -635,6 +724,10 @@ class ModificationCaller:
                 'in_typical_position': False,
                 'dominant_pattern': dominant_pattern,
                 'source': 'novel_candidate',
+                'fold_change': (mismatch_rate / self.background_error_rate
+                                if self.background_error_rate > 0
+                                else np.nan),
+                'background_error_rate': self.background_error_rate,
             })
 
         return pd.DataFrame(all_calls) if all_calls else pd.DataFrame()
@@ -725,6 +818,109 @@ class ModificationCaller:
         summary = summary.reset_index()
 
         return summary
+
+
+class ReplicateAggregator:
+    """Aggregate per-sample modification calls across biological replicates.
+
+    Uses Fisher's combined probability test to merge p-values from
+    independent replicate samples and a "double-sieve" filter:
+    1. The modification must be detected in >= *min_replicates* samples.
+    2. The Fisher combined p-value must be < *alpha*.
+
+    Produces two outputs:
+    - **aggregated_modifications**: all sites detected in >=1 replicate,
+      with replicate count and Fisher p-value.
+    - **consensus_modifications**: the subset passing the double-sieve.
+    """
+
+    def __init__(self, min_replicates: int = 3, alpha: float = 0.01):
+        self.min_replicates = min_replicates
+        self.alpha = alpha
+
+    def aggregate(
+        self,
+        per_sample_calls: Dict[str, pd.DataFrame],
+        replicate_groups: Dict[str, List[str]],
+    ) -> pd.DataFrame:
+        """Aggregate modification calls across replicate groups.
+
+        Args:
+            per_sample_calls: {sample_name_unique: calls_df} — each
+                DataFrame has columns including trna_name, position,
+                modification, mismatch_rate, fold_change, coverage,
+                confidence, pvalue.
+            replicate_groups: {condition_name: [sample_name_unique, ...]}.
+
+        Returns:
+            DataFrame with aggregated calls (one row per condition x
+            trna x position x modification).  Includes
+            ``consensus_call`` boolean column.
+        """
+        rows: List[dict] = []
+
+        for condition, members in replicate_groups.items():
+            n_total = len(members)
+            # Collect calls from all replicates in this group
+            group_dfs = []
+            for snu in members:
+                df = per_sample_calls.get(snu)
+                if df is not None and not df.empty:
+                    group_dfs.append(df)
+
+            if not group_dfs:
+                continue
+
+            combined = pd.concat(group_dfs, ignore_index=True)
+
+            # Group by modification site
+            for (trna, pos, mod), grp in combined.groupby(
+                ['trna_name', 'position', 'modification']
+            ):
+                n_detected = int(grp.shape[0])
+
+                # Fisher combined p-value
+                pvals = grp['pvalue'].dropna().values.astype(float)
+                pvals = np.clip(pvals, 1e-300, 1.0)
+                if len(pvals) >= 2:
+                    _, fisher_p = combine_pvalues(pvals, method='fisher')
+                elif len(pvals) == 1:
+                    fisher_p = float(pvals[0])
+                else:
+                    fisher_p = np.nan
+
+                mean_mm = float(grp['mismatch_rate'].mean())
+                mean_fc = float(grp['fold_change'].mean()) if 'fold_change' in grp.columns else np.nan
+                mean_cov = float(grp['coverage'].mean())
+                mean_conf = float(grp['confidence'].mean())
+
+                consensus = (
+                    n_detected >= self.min_replicates
+                    and not np.isnan(fisher_p)
+                    and fisher_p < self.alpha
+                )
+
+                rows.append({
+                    'sample_name': condition,
+                    'trna_name': trna,
+                    'position': pos,
+                    'modification': mod,
+                    'n_replicates_detected': n_detected,
+                    'n_replicates_total': n_total,
+                    'fisher_combined_pvalue': fisher_p,
+                    'fisher_significant': (
+                        not np.isnan(fisher_p) and fisher_p < self.alpha
+                    ),
+                    'mean_mismatch_rate': mean_mm,
+                    'mean_fold_change': mean_fc,
+                    'mean_coverage': mean_cov,
+                    'mean_confidence': mean_conf,
+                    'consensus_call': consensus,
+                })
+
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows)
 
 
 def benjamini_hochberg_fdr(pvalues, alpha=0.05):

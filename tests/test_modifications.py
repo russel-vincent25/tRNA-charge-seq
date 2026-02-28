@@ -330,6 +330,11 @@ class TestIntegration:
         # May or may not have calls depending on data, but should not error
         assert isinstance(calls, pd.DataFrame)
 
+        # Verify fold_change column is present when calls are made
+        if not calls.empty:
+            assert 'fold_change' in calls.columns
+            assert 'background_error_rate' in calls.columns
+
 
 class TestEdgeCases:
     """Unit tests with synthetic data for edge cases."""

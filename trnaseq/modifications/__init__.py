@@ -18,6 +18,8 @@ from .modification_caller import (
     ModificationProfile,
     MODIFICATION_PROFILES,
     benjamini_hochberg_fdr,
+    estimate_background_error_rate,
+    ReplicateAggregator,
 )
 from .positional import PositionalExtractor
 from .modomics import MODOMICSAnnotator
@@ -29,6 +31,8 @@ __all__ = [
     'ModificationProfile',
     'MODIFICATION_PROFILES',
     'benjamini_hochberg_fdr',
+    'estimate_background_error_rate',
+    'ReplicateAggregator',
     'PositionalExtractor',
     'MODOMICSAnnotator',
 ]
