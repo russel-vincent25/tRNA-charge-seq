@@ -1142,16 +1142,21 @@ class PreprocessingPipeline:
 
         common_seqs = self.config.get('common_seqs', None)
 
-        # Check if common-seq-obs files actually exist in the SWalign directory
-        # (common_seqs config points to the fasta used during alignment,
-        #  but STATS_collection needs the *result* files to exist)
-        if common_seqs is not None:
-            align_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
-            common_obs_files = list(align_dir.glob('*_common-seq-obs.json*'))
-            if not common_obs_files:
-                self.log("  WARNING: common_seqs configured but no common-seq-obs files "
-                        "found in SWalign/. Setting common_seqs=None.", level="WARN")
-                common_seqs = None
+        align_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
+        common_obs_files = list(align_dir.glob('*_common-seq-obs.json*'))
+
+        if common_seqs is not None and not common_obs_files:
+            # common_seqs configured but no result files from alignment
+            self.log("  WARNING: common_seqs configured but no common-seq-obs files "
+                    "found in SWalign/. Setting common_seqs=None.", level="WARN")
+            common_seqs = None
+        elif common_seqs is None and common_obs_files:
+            # Stale common-seq-obs files from a previous run with common_seqs
+            self.log(f"  WARNING: Removing {len(common_obs_files)} stale common-seq-obs "
+                     "files from SWalign/ (common_seqs is now null).", level="WARN")
+            for f in common_obs_files:
+                f.unlink()
+            common_obs_files = []
 
         # Run stats collection
         stats_obj = STATS_collection(
