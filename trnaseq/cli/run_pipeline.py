@@ -731,10 +731,12 @@ class PreprocessingPipeline:
                         "Duplicate barcodes", CheckStatus.PASS, group=group))
 
         # Index list checks
+        # Format: columns 'type', 'id', 'sequence' with type values
+        # like 'P5_index', 'P7_index', 'barcode'
         if index_list and Path(index_list).is_file():
             try:
                 idf = pd.read_excel(index_list)
-                idx_required = ['P5_index', 'P7_index']
+                idx_required = ['type', 'id', 'sequence']
                 idx_missing = [c for c in idx_required if c not in idf.columns]
                 if idx_missing:
                     report.add(CheckResult(
@@ -745,16 +747,28 @@ class PreprocessingPipeline:
                         "Required columns (index_list)", CheckStatus.PASS,
                         group=group))
 
-                # Check P5/P7 IDs match
-                if 'P5_index' in sdf.columns and 'P5_index' in idf.columns:
-                    sample_p5 = set(sdf['P5_index'].dropna().unique())
-                    index_p5 = set(idf['P5_index'].dropna().unique())
-                    unmatched_p5 = sample_p5 - index_p5
-                    if unmatched_p5:
+                # Check P5/P7/barcode IDs in sample_list match index_list
+                if 'type' in idf.columns and 'id' in idf.columns:
+                    index_ids = {}  # {type: set of ids}
+                    for t in idf['type'].unique():
+                        index_ids[t] = set(idf.loc[idf['type'] == t, 'id'].values)
+
+                    unmatched = []
+                    for col, idx_type in [('P5_index', 'P5_index'),
+                                          ('P7_index', 'P7_index'),
+                                          ('barcode', 'barcode')]:
+                        if col in sdf.columns and idx_type in index_ids:
+                            sample_vals = set(sdf[col].dropna().unique())
+                            missing = sample_vals - index_ids[idx_type]
+                            if missing:
+                                unmatched.append(
+                                    f"{col}: {', '.join(str(x) for x in sorted(missing)[:3])}")
+
+                    if unmatched:
                         report.add(CheckResult(
-                            "P5 index matching", CheckStatus.FAIL,
-                            f"P5 IDs in sample_list but not index_list: "
-                            f"{', '.join(str(x) for x in sorted(unmatched_p5)[:5])}",
+                            "Index/barcode matching", CheckStatus.FAIL,
+                            "IDs in sample_list not found in index_list:\n"
+                            + "\n".join(f"  {u}" for u in unmatched),
                             group=group))
                     else:
                         report.add(CheckResult(
