@@ -25,6 +25,7 @@ plans/
 # Claude Code local config and tmp files
 .claude/
 tmp/
+tests/
 
 # Data folder (too big for Github)
 /projects/**/*.fasta
