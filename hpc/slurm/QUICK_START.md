@@ -67,7 +67,7 @@ project_dir/
 ├── QC_summary.csv                # Per-sample metrics
 ├── charge_analysis/              # charge_df_{aa,codon,transcript}.csv
 ├── sample_df.xlsx                # Updated sample metadata
-├── preprocessing.log             # Pipeline log
+├── pipeline.log                  # Pipeline log
 └── data/
     ├── raw_fastq/                # Original FASTQs (already here)
     ├── AdapterRemoval/           # Merged reads

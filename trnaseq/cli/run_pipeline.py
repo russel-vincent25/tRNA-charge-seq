@@ -192,7 +192,7 @@ class PreprocessingPipeline:
         self.project_dir = Path(project_dir).resolve()
         self.n_jobs = n_jobs
         self.sample_index = sample_index
-        self.log_file = self.project_dir / "preprocessing.log"
+        self.log_file = self.project_dir / "pipeline.log"
 
         # Create output directory
         self.project_dir.mkdir(parents=True, exist_ok=True)
@@ -356,10 +356,12 @@ class PreprocessingPipeline:
             self.log(f"  Merge QC probe ({self.config.get('qc_probe_reads', 10000)} reads per file pair):")
             total_umi = total_bc = total_both = total_n = 0
             for basename, stats in probe_results.items():
-                self.log(f"    {basename}: UMI={stats['pct_umi']}% "
-                         f"BC={stats['pct_bc']}% both={stats['pct_both']}%")
+                stagger_str = ""
                 if 'stagger_counts' in stats:
-                    self.log(f"    {basename}: stagger distribution: {stats['stagger_counts']}")
+                    counts = stats['stagger_counts']
+                    stagger_str = f"  stagger=[{', '.join(str(counts.get(i, 0)) for i in range(max(counts.keys()) + 1))}]"
+                self.log(f"    {basename}: UMI={stats['pct_umi']}% "
+                         f"BC={stats['pct_bc']}% both={stats['pct_both']}%{stagger_str}")
                 total_umi += stats['pct_umi'] * stats['n_probed']
                 total_bc += stats['pct_bc'] * stats['n_probed']
                 total_both += stats['pct_both'] * stats['n_probed']
@@ -708,13 +710,17 @@ class PreprocessingPipeline:
 
             summary = analyser._summary
             if summary is not None and not summary.empty:
-                for _, row in summary.iterrows():
-                    self.log(f"    {row['sample_name_unique']}: "
-                             f"{row['pct_full_length']:.1f}% full-length, "
-                             f"{row['pct_rt_dropoff']:.1f}% RT drop-off")
+                n_samples = len(summary)
+                fl = summary['pct_full_length']
+                rt = summary['pct_rt_dropoff']
+                self.log(f"  Fragment analysis complete ({n_samples} samples):")
+                self.log(f"    Full-length:  {fl.min():.1f} – {fl.max():.1f}%  (mean {fl.mean():.1f}%)")
+                self.log(f"    RT drop-off:  {rt.min():.1f} – {rt.max():.1f}%  (mean {rt.mean():.1f}%)")
+                self.log(f"    See qc_reports/fragment_report.html for per-sample details")
+            else:
+                self.log("  Fragment analysis complete!")
 
             self._fragment_analysis_ran = True
-            self.log("  Fragment analysis complete!")
 
             # Generate fragment report
             if FRAGMENT_REPORT_AVAILABLE:
@@ -965,6 +971,7 @@ class PreprocessingPipeline:
             )
 
             per_sample_calls = {}
+            sample_call_counts = []
 
             for sample_name, pscm_dict in all_pscm.items():
                 pscm_dfs = analyzer.load_pscm_from_positional(pscm_dict)
@@ -1001,11 +1008,26 @@ class PreprocessingPipeline:
                     combined = pd.concat(sample_calls, ignore_index=True)
                     per_sample_calls[sample_name] = combined
                     _save_df(combined, sample_dir / 'modification_calls')
-                    self.log(f"  {sample_name}: {len(combined)} calls "
-                             f"({len(pscm_dict)} tRNAs)")
+                    sample_call_counts.append(len(combined))
                 else:
                     per_sample_calls[sample_name] = pd.DataFrame()
-                    self.log(f"  {sample_name}: 0 calls ({len(pscm_dict)} tRNAs)")
+                    sample_call_counts.append(0)
+
+            # Log modification summary
+            n_mod_samples = len(sample_call_counts)
+            total_calls = sum(sample_call_counts)
+            unique_trnas = len(set().union(*(
+                set(df['trna_name']) for df in per_sample_calls.values()
+                if not df.empty and 'trna_name' in df.columns
+            ))) if per_sample_calls else 0
+            if n_mod_samples > 0 and total_calls > 0:
+                counts = np.array(sample_call_counts)
+                self.log(f"  Modification calling complete ({n_mod_samples} samples):")
+                self.log(f"    Total: {total_calls:,} calls across {unique_trnas} unique tRNAs")
+                self.log(f"    Per-sample: {counts.min()} – {counts.max()} calls  (mean {counts.mean():.1f})")
+                self.log(f"    See qc_reports/modification_report.html for per-sample details")
+            else:
+                self.log(f"  Modification calling complete ({n_mod_samples} samples): 0 calls")
 
             # ==== Phase 4: Replicate aggregation ====
             self.log("  Phase 4/6: Aggregating across replicates...")

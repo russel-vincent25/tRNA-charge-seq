@@ -1,0 +1,78 @@
+# RVHMS04 RT Comparison (RVHMS04_5215 reference, full pipeline)
+# ==================================================================================
+# 36 samples: 4 RT enzymes (Indura, Maxima, SSIV, TGIRT) × 3 temps (37/55/60) × 3 reps.
+# Species: E. coli (K-12 MG1655) + 3 synthetic controls
+# Usage: bash submit_pipeline.sh config_RT_comp.yaml $PROJECT_DIR 36
+
+# Sample and Index Information
+sample_list: "sample_list_RT_comp.xlsx"
+index_list: "/home/ruv988/github_repos/tRNA-charge-seq/utils/index_list_updated.xlsx"
+
+# Input Data
+seq_dir: "data/raw_fastq"
+
+# tRNA Database
+tRNA_database:
+  RVHMS04_5215: "/home/ruv988/github_repos/tRNA-charge-seq/tRNA_database/RVHMS04_5215/RVHMS04_5215.fa"
+
+# Alignment Parameters
+SWIPE_score_mat: "/home/ruv988/github_repos/tRNA-charge-seq/utils/nuc_score-matrix_2.txt"
+common_seqs: "/home/ruv988/github_repos/tRNA-charge-seq/utils/common-seqs_1k.fasta.bz2"
+
+# Read Length and Quality
+min_read_len: 39
+min_score_align: 15
+
+# Alignment Scoring
+gap_penalty: 6
+extension_penalty: 3
+
+# UMI Trimming — anchored mode (GCv4)
+umi_trim_mode: "anchored"
+adapter_sequences: "/home/ruv988/github_repos/tRNA-charge-seq/utils/adapter_sequences.yaml"
+umi_anchor: "GCv4"
+umi_max_stagger: 3
+umi_anchor_max_dist: 1
+
+# Downsampling
+downsample_percentile: 50
+downsample_absolute: null
+
+# Processing Options
+overwrite: false
+
+# Stage 3: Charge Quantification
+run_charge_quantification: true
+charge_count: "count"
+charge_levels:
+  - transcript
+  - codon
+  - aa
+include_synthetic: false
+include_mito: true
+
+# Fragment Analysis
+run_fragment_analysis: true
+fragment_min_reads: 10
+fragment_write_csv: true
+
+# Stage 4: Parquet Storage
+run_parquet_storage: true
+
+# Stage 5: QC Dashboard
+run_qc_report: true
+
+# Stage 6: Modification Analysis
+run_modification_analysis: true
+organism: "ecoli"
+no_modomics: false
+discover_novel_modifications: true
+
+# Synthetic tRNA Source Classification
+tRNA_source_prefixes:
+  Synthetic_Control_: "synthetic"
+
+# Stage 7: Abundance Analysis (optional)
+run_abundance_analysis: false
+# abundance_level: "aa"
+# abundance_control: "TGIRT-37"

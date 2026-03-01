@@ -42,7 +42,7 @@ tmp/
 /projects/**/abundance_results
 /projects/**/parquet_data
 /projects/**/qc_reports
-/projects/**/preprocessing.log
+/projects/**/pipeline.log
 /projects/**/CurrentStatus.log
 /projects/**/inp_file_df.xlsx
 /projects/**/sample_df.xlsx
