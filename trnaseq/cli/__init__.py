@@ -49,6 +49,11 @@ def main(argv=None):
         help='Threads per subprocess (AdapterRemoval/SWIPE). '
              'Default: config threads_per_job or 2'
     )
+    pipeline_parser.add_argument(
+        '--preflight', action='store_true',
+        help='Validate config, files, database, and tools without running '
+             'the pipeline. Exits with code 0 (pass) or 1 (fail).'
+    )
 
     # --- quantify subcommand ---
     from trnaseq.cli.commands.quantify import add_quantify_parser
@@ -107,4 +112,8 @@ def _run_pipeline(args, parser):
         pipeline.config['run_parquet_storage'] = True
 
     stages = PreprocessingPipeline.parse_stages(args.stages)
+
+    if getattr(args, 'preflight', False):
+        sys.exit(pipeline.preflight(stages=stages))
+
     pipeline.run(stages=stages)

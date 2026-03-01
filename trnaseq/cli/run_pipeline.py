@@ -41,6 +41,9 @@ import os
 import sys
 import time
 import json
+import shutil
+from enum import Enum
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
 import argparse
@@ -129,6 +132,100 @@ try:
     ABUNDANCE_REPORT_AVAILABLE = True
 except ImportError:
     ABUNDANCE_REPORT_AVAILABLE = False
+
+
+# ------------------------------------------------------------------
+# Preflight validation helpers
+# ------------------------------------------------------------------
+
+class CheckStatus(Enum):
+    PASS = "PASS"
+    WARN = "WARN"
+    FAIL = "FAIL"
+    SKIP = "SKIP"
+
+
+@dataclass
+class CheckResult:
+    name: str
+    status: CheckStatus
+    message: str = ""
+    group: str = ""
+
+
+class PreflightReport:
+    """Collects check results and prints a grouped, color-coded report."""
+
+    _COLORS = {
+        CheckStatus.PASS: "\033[32m",  # green
+        CheckStatus.WARN: "\033[33m",  # yellow
+        CheckStatus.FAIL: "\033[31m",  # red
+        CheckStatus.SKIP: "\033[90m",  # grey
+    }
+    _RESET = "\033[0m"
+
+    def __init__(self):
+        self.results: list[CheckResult] = []
+
+    def add(self, result: CheckResult):
+        self.results.append(result)
+
+    @property
+    def ok(self) -> bool:
+        return not any(r.status == CheckStatus.FAIL for r in self.results)
+
+    def print(self):
+        use_color = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+        W = 70
+
+        def _tag(status: CheckStatus) -> str:
+            label = status.value.center(4)
+            if use_color:
+                return f"{self._COLORS[status]}{label}{self._RESET}"
+            return label
+
+        print("=" * W)
+        print("  tRNA-charge-seq PREFLIGHT CHECK".center(W))
+        print("=" * W)
+
+        groups: dict[str, list[CheckResult]] = {}
+        for r in self.results:
+            groups.setdefault(r.group, []).append(r)
+
+        for group, checks in groups.items():
+            print(f"\n  [{group}]")
+            for c in checks:
+                tag = _tag(c.status)
+                # Pad name to 32 chars for alignment
+                name_part = c.name[:32].ljust(32)
+                info = f"  ({c.message})" if c.message and c.status != CheckStatus.FAIL else ""
+                print(f"    {tag}  {name_part}{info}")
+                if c.status == CheckStatus.FAIL and c.message:
+                    for line in c.message.split("\n"):
+                        print(f"          {line}")
+
+        n_pass = sum(1 for r in self.results if r.status == CheckStatus.PASS)
+        n_warn = sum(1 for r in self.results if r.status == CheckStatus.WARN)
+        n_fail = sum(1 for r in self.results if r.status == CheckStatus.FAIL)
+        n_skip = sum(1 for r in self.results if r.status == CheckStatus.SKIP)
+
+        print()
+        print("-" * W)
+        verdict = "READY" if self.ok else "NOT READY"
+        parts = [f"{n_pass} passed"]
+        if n_warn:
+            parts.append(f"{n_warn} warnings")
+        if n_fail:
+            parts.append(f"{n_fail} failures")
+        if n_skip:
+            parts.append(f"{n_skip} skipped")
+        summary = ", ".join(parts)
+        if use_color:
+            color = self._COLORS[CheckStatus.PASS] if self.ok else self._COLORS[CheckStatus.FAIL]
+            print(f"  {color}{verdict}{self._RESET}  {summary}")
+        else:
+            print(f"  {verdict}  {summary}")
+        print("=" * W)
 
 
 # ------------------------------------------------------------------
@@ -237,6 +334,512 @@ class PreprocessingPipeline:
                 for k, v in d.items():
                     if v is not None and not os.path.isabs(v):
                         d[k] = str(self.project_dir / v)
+
+    # ------------------------------------------------------------------
+    # Preflight validation
+    # ------------------------------------------------------------------
+
+    def preflight(self, stages=None):
+        """Run preflight checks and print a report.
+
+        Returns:
+            0 if all checks pass, 1 if any check fails.
+        """
+        if stages is None:
+            stages = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6', '7'}
+
+        report = PreflightReport()
+
+        self._preflight_config(report, stages)
+        self._preflight_files(report, stages)
+        self._preflight_database(report, stages)
+        self._preflight_samples(report, stages)
+        self._preflight_tools(report, stages)
+
+        report.print()
+        return 0 if report.ok else 1
+
+    def _preflight_config(self, report, stages):
+        """Validate configuration values."""
+        group = "Config"
+
+        # Config YAML already loaded successfully by __init__
+        report.add(CheckResult("Config YAML is valid", CheckStatus.PASS, group=group))
+
+        # umi_trim_mode
+        umi_mode = self.config.get('umi_trim_mode', 'anchored')
+        valid_modes = ('anchored', 'pyrimidine')
+        if umi_mode in valid_modes:
+            report.add(CheckResult(
+                "umi_trim_mode", CheckStatus.PASS,
+                f"{umi_mode}", group=group))
+        else:
+            report.add(CheckResult(
+                "umi_trim_mode", CheckStatus.FAIL,
+                f"'{umi_mode}' is not valid. Use: {', '.join(valid_modes)}",
+                group=group))
+
+        # umi_anchor when anchored
+        if umi_mode == 'anchored':
+            anchor = self.config.get('umi_anchor')
+            if anchor:
+                # Check if it exists in adapter_sequences
+                adapter_path = self.config.get('adapter_sequences')
+                if adapter_path and Path(adapter_path).is_file():
+                    with open(adapter_path) as f:
+                        adapter_seqs = yaml.safe_load(f)
+                    if anchor in adapter_seqs:
+                        report.add(CheckResult(
+                            "umi_anchor", CheckStatus.PASS,
+                            f"{anchor} = {adapter_seqs[anchor]}", group=group))
+                    else:
+                        report.add(CheckResult(
+                            "umi_anchor", CheckStatus.FAIL,
+                            f"'{anchor}' not in {adapter_path}\n"
+                            f"Available: {list(adapter_seqs.keys())}",
+                            group=group))
+                else:
+                    report.add(CheckResult(
+                        "umi_anchor", CheckStatus.PASS,
+                        f"{anchor} (adapter_sequences file checked later)",
+                        group=group))
+            else:
+                report.add(CheckResult(
+                    "umi_anchor", CheckStatus.FAIL,
+                    "'umi_anchor' required when umi_trim_mode='anchored'",
+                    group=group))
+
+        # seq_dir: warn if contains 'data/' (double-nested)
+        seq_dir = self.config.get('seq_dir', 'raw_fastq')
+        if 'data/' in seq_dir or 'data\\' in seq_dir:
+            report.add(CheckResult(
+                "seq_dir", CheckStatus.WARN,
+                f"'{seq_dir}' contains 'data/' — may be double-nested.\n"
+                f"Pipeline uses project_dir/data/{{seq_dir}}/",
+                group=group))
+
+        # Stage 6: needs organism
+        if '6' in stages and self.config.get('run_modification_analysis', False):
+            org = self.config.get('organism')
+            if not org:
+                report.add(CheckResult(
+                    "organism (stage 6)", CheckStatus.FAIL,
+                    "Stage 6 (modifications) requires 'organism' in config",
+                    group=group))
+            else:
+                report.add(CheckResult(
+                    "organism (stage 6)", CheckStatus.PASS,
+                    org, group=group))
+
+        # Stage 7: needs abundance_control
+        if '7' in stages and self.config.get('run_abundance_analysis', False):
+            ctrl = self.config.get('abundance_control')
+            if not ctrl:
+                report.add(CheckResult(
+                    "abundance_control (stage 7)", CheckStatus.FAIL,
+                    "Stage 7 (abundance) requires 'abundance_control' in config",
+                    group=group))
+            else:
+                report.add(CheckResult(
+                    "abundance_control (stage 7)", CheckStatus.PASS,
+                    ctrl, group=group))
+
+    def _preflight_files(self, report, stages):
+        """Check that required input files exist."""
+        group = "Files"
+
+        needs_early = stages.intersection({'0a', '0b', '0c', '1'})
+
+        # sample_list
+        sample_list = self.config.get('sample_list')
+        if sample_list:
+            p = Path(sample_list)
+            if p.is_file():
+                try:
+                    df = pd.read_excel(p)
+                    report.add(CheckResult(
+                        "sample_list", CheckStatus.PASS,
+                        f"{len(df)} rows", group=group))
+                except Exception as e:
+                    report.add(CheckResult(
+                        "sample_list", CheckStatus.FAIL,
+                        f"Cannot read: {e}", group=group))
+            else:
+                report.add(CheckResult(
+                    "sample_list", CheckStatus.FAIL,
+                    f"Not found: {p}", group=group))
+        else:
+            report.add(CheckResult(
+                "sample_list", CheckStatus.FAIL,
+                "Not set in config", group=group))
+
+        # index_list
+        index_list = self.config.get('index_list')
+        if index_list:
+            p = Path(index_list)
+            if p.is_file():
+                report.add(CheckResult("index_list", CheckStatus.PASS, group=group))
+            else:
+                report.add(CheckResult(
+                    "index_list", CheckStatus.FAIL,
+                    f"Not found: {p}", group=group))
+
+        # SWIPE_score_mat
+        score_mat = self.config.get('SWIPE_score_mat')
+        if score_mat and stages.intersection({'1'}):
+            p = Path(score_mat)
+            if p.is_file():
+                try:
+                    from src.alignment import read_scoremat
+                    read_scoremat(str(p))
+                    report.add(CheckResult(
+                        "SWIPE_score_mat", CheckStatus.PASS,
+                        "parsed OK", group=group))
+                except Exception as e:
+                    report.add(CheckResult(
+                        "SWIPE_score_mat", CheckStatus.FAIL,
+                        f"Parse error: {e}", group=group))
+            else:
+                report.add(CheckResult(
+                    "SWIPE_score_mat", CheckStatus.FAIL,
+                    f"Not found: {p}", group=group))
+
+        # adapter_sequences (if anchored mode)
+        umi_mode = self.config.get('umi_trim_mode', 'anchored')
+        if umi_mode == 'anchored':
+            adapter_path = self.config.get('adapter_sequences')
+            if adapter_path:
+                p = Path(adapter_path)
+                if p.is_file():
+                    report.add(CheckResult(
+                        "adapter_sequences", CheckStatus.PASS, group=group))
+                else:
+                    report.add(CheckResult(
+                        "adapter_sequences", CheckStatus.FAIL,
+                        f"Not found: {p}", group=group))
+            else:
+                # Check default location
+                default = self.project_dir / 'utils' / 'adapter_sequences.yaml'
+                if default.is_file():
+                    report.add(CheckResult(
+                        "adapter_sequences", CheckStatus.PASS,
+                        f"using default: {default}", group=group))
+                else:
+                    report.add(CheckResult(
+                        "adapter_sequences", CheckStatus.FAIL,
+                        f"Not set and default not found: {default}",
+                        group=group))
+
+        # common_seqs (.bz2)
+        common_seqs = self.config.get('common_seqs')
+        if common_seqs is not None:
+            p = Path(common_seqs)
+            if p.is_file():
+                report.add(CheckResult("common_seqs", CheckStatus.PASS, group=group))
+            else:
+                report.add(CheckResult(
+                    "common_seqs", CheckStatus.FAIL,
+                    f"Not found: {p}", group=group))
+
+        # Raw data directory + FASTQ files
+        if needs_early:
+            seq_dir = self.config.get('seq_dir', 'raw_fastq')
+            raw_path = self.project_dir / 'data' / seq_dir
+            if raw_path.is_dir():
+                report.add(CheckResult(
+                    "Raw data directory", CheckStatus.PASS,
+                    str(raw_path), group=group))
+
+                # Check FASTQ files
+                try:
+                    sl = self.config.get('sample_list')
+                    if sl and Path(sl).is_file():
+                        sdf = pd.read_excel(sl)
+                        fastq_cols = [c for c in sdf.columns
+                                      if 'fastq' in c.lower() and 'filename' in c.lower()]
+                        missing = []
+                        for col in fastq_cols:
+                            for fname in sdf[col].dropna().unique():
+                                fpath = raw_path / fname
+                                if not fpath.is_file():
+                                    missing.append(str(fname))
+                                elif fpath.stat().st_size == 0:
+                                    missing.append(f"{fname} (empty)")
+                        if missing:
+                            n = len(missing)
+                            shown = missing[:5]
+                            msg = f"{n} missing:\n" + "\n".join(shown)
+                            if n > 5:
+                                msg += f"\n... and {n - 5} more"
+                            report.add(CheckResult(
+                                "FASTQ files", CheckStatus.FAIL, msg, group=group))
+                        else:
+                            n_files = sum(
+                                len(sdf[col].dropna().unique()) for col in fastq_cols)
+                            report.add(CheckResult(
+                                "FASTQ files", CheckStatus.PASS,
+                                f"{n_files} files found", group=group))
+                except Exception:
+                    pass  # sample_list checks handle parse errors
+            else:
+                report.add(CheckResult(
+                    "Raw data directory", CheckStatus.FAIL,
+                    f"Not found: {raw_path}", group=group))
+
+    def _preflight_database(self, report, stages):
+        """Validate tRNA database files."""
+        group = "Database"
+        tRNA_db = self.config.get('tRNA_database')
+        if not isinstance(tRNA_db, dict) or not tRNA_db:
+            report.add(CheckResult(
+                "tRNA_database", CheckStatus.FAIL,
+                "Must be a dict of species: fasta_path", group=group))
+            return
+
+        for species, fasta_path in tRNA_db.items():
+            p = Path(fasta_path)
+
+            # FASTA file
+            if not p.is_file():
+                report.add(CheckResult(
+                    f"tRNA FASTA ({species})", CheckStatus.FAIL,
+                    f"Not found: {p}", group=group))
+                continue
+
+            # Count sequences and validate headers
+            # Format: {prefix}_tRNA-{aa}-{anticodon}-{copy}-{allele}
+            # Parser uses split('-')[1]=aa, split('-')[2]=anticodon
+            # Prefix must not contain hyphens (would shift split indices)
+            n_seqs = 0
+            bad_headers = []
+            hyphen_prefix = []
+            with open(p) as fh:
+                for line in fh:
+                    if not line.startswith('>'):
+                        continue
+                    n_seqs += 1
+                    header = line[1:].strip().split()[0]  # first word
+                    if '_tRNA-' not in header:
+                        bad_headers.append(header)
+                    else:
+                        prefix = header.split('_tRNA-')[0]
+                        if '-' in prefix:
+                            hyphen_prefix.append(header)
+
+            report.add(CheckResult(
+                f"tRNA FASTA ({species})", CheckStatus.PASS,
+                f"{n_seqs} sequences", group=group))
+
+            if bad_headers:
+                shown = bad_headers[:3]
+                msg = f"{len(bad_headers)} headers missing 'tRNA' segment:\n"
+                msg += "\n".join(f"  {h}" for h in shown)
+                report.add(CheckResult(
+                    f"FASTA headers ({species})", CheckStatus.WARN,
+                    msg, group=group))
+
+            if hyphen_prefix:
+                shown = hyphen_prefix[:3]
+                msg = (f"{len(hyphen_prefix)} headers have hyphens in prefix "
+                       f"(breaks parser):\n")
+                msg += "\n".join(f"  {h}" for h in shown)
+                if len(hyphen_prefix) > 3:
+                    msg += f"\n  ... and {len(hyphen_prefix) - 3} more"
+                report.add(CheckResult(
+                    f"FASTA prefix ({species})", CheckStatus.FAIL,
+                    msg, group=group))
+
+            # BLAST protein database files (appended to full .fa path)
+            blast_exts = ['.phr', '.pin', '.psq']
+            missing_blast = [ext for ext in blast_exts
+                             if not Path(str(p) + ext).is_file()]
+            if not missing_blast:
+                report.add(CheckResult(
+                    f"BLAST db ({species})", CheckStatus.PASS, group=group))
+            else:
+                msg = f"Missing: {', '.join(missing_blast)}\n"
+                msg += f"Run: makeblastdb -dbtype prot -in {p.name}"
+                report.add(CheckResult(
+                    f"BLAST db ({species})", CheckStatus.FAIL, msg, group=group))
+
+    def _preflight_samples(self, report, stages):
+        """Validate sample and index list contents."""
+        group = "Samples"
+
+        sample_list = self.config.get('sample_list')
+        index_list = self.config.get('index_list')
+
+        # Need both files to exist for these checks
+        if not sample_list or not Path(sample_list).is_file():
+            report.add(CheckResult(
+                "Sample validation", CheckStatus.SKIP,
+                "sample_list not available", group=group))
+            return
+
+        try:
+            sdf = pd.read_excel(sample_list)
+        except Exception:
+            report.add(CheckResult(
+                "Sample validation", CheckStatus.SKIP,
+                "Could not read sample_list", group=group))
+            return
+
+        # Required columns
+        required_cols = ['sample_name_unique', 'fastq_mate1_filename',
+                         'fastq_mate2_filename', 'P5_index', 'P7_index']
+        missing_cols = [c for c in required_cols if c not in sdf.columns]
+        if missing_cols:
+            report.add(CheckResult(
+                "Required columns (sample_list)", CheckStatus.FAIL,
+                f"Missing: {', '.join(missing_cols)}", group=group))
+        else:
+            report.add(CheckResult(
+                "Required columns (sample_list)", CheckStatus.PASS, group=group))
+
+        # Unique sample names
+        if 'sample_name_unique' in sdf.columns:
+            dups = sdf['sample_name_unique'].duplicated()
+            if dups.any():
+                dup_names = sdf.loc[dups, 'sample_name_unique'].tolist()[:5]
+                report.add(CheckResult(
+                    "Unique sample names", CheckStatus.FAIL,
+                    f"{dups.sum()} duplicates: {', '.join(str(d) for d in dup_names)}",
+                    group=group))
+            else:
+                report.add(CheckResult(
+                    "Unique sample names", CheckStatus.PASS,
+                    f"{len(sdf)} samples", group=group))
+
+        # Duplicate barcodes within file pairs
+        if 'barcode_name' in sdf.columns:
+            file_pair_cols = [c for c in ['fastq_mate1_filename', 'fastq_mate2_filename']
+                              if c in sdf.columns]
+            if file_pair_cols:
+                bc_col = 'barcode_name'
+                grouped = sdf.groupby(file_pair_cols)[bc_col]
+                dup_pairs = []
+                for keys, grp in grouped:
+                    if grp.duplicated().any():
+                        dup_pairs.append(str(keys))
+                if dup_pairs:
+                    report.add(CheckResult(
+                        "Duplicate barcodes", CheckStatus.FAIL,
+                        f"Duplicate barcodes in file pairs: {', '.join(dup_pairs[:3])}",
+                        group=group))
+                else:
+                    report.add(CheckResult(
+                        "Duplicate barcodes", CheckStatus.PASS, group=group))
+
+        # Index list checks
+        if index_list and Path(index_list).is_file():
+            try:
+                idf = pd.read_excel(index_list)
+                idx_required = ['P5_index', 'P7_index']
+                idx_missing = [c for c in idx_required if c not in idf.columns]
+                if idx_missing:
+                    report.add(CheckResult(
+                        "Required columns (index_list)", CheckStatus.FAIL,
+                        f"Missing: {', '.join(idx_missing)}", group=group))
+                else:
+                    report.add(CheckResult(
+                        "Required columns (index_list)", CheckStatus.PASS,
+                        group=group))
+
+                # Check P5/P7 IDs match
+                if 'P5_index' in sdf.columns and 'P5_index' in idf.columns:
+                    sample_p5 = set(sdf['P5_index'].dropna().unique())
+                    index_p5 = set(idf['P5_index'].dropna().unique())
+                    unmatched_p5 = sample_p5 - index_p5
+                    if unmatched_p5:
+                        report.add(CheckResult(
+                            "P5 index matching", CheckStatus.FAIL,
+                            f"P5 IDs in sample_list but not index_list: "
+                            f"{', '.join(str(x) for x in sorted(unmatched_p5)[:5])}",
+                            group=group))
+                    else:
+                        report.add(CheckResult(
+                            "Index/barcode matching", CheckStatus.PASS,
+                            group=group))
+            except Exception as e:
+                report.add(CheckResult(
+                    "Index list validation", CheckStatus.FAIL,
+                    f"Cannot read: {e}", group=group))
+
+        # Species match tRNA_database keys
+        if 'species' in sdf.columns:
+            tRNA_db = self.config.get('tRNA_database', {})
+            if isinstance(tRNA_db, dict):
+                sample_species = set(sdf['species'].dropna().unique())
+                db_species = set(tRNA_db.keys())
+                unmatched = sample_species - db_species
+                if unmatched:
+                    report.add(CheckResult(
+                        "Species vs tRNA_database", CheckStatus.FAIL,
+                        f"Species in sample_list with no database entry: "
+                        f"{', '.join(sorted(unmatched))}",
+                        group=group))
+                else:
+                    report.add(CheckResult(
+                        "Species vs tRNA_database", CheckStatus.PASS,
+                        group=group))
+
+        # common_seqs single-species guard
+        common_seqs = self.config.get('common_seqs')
+        if common_seqs is not None and 'species' in sdf.columns:
+            n_species = sdf['species'].nunique()
+            if n_species > 1:
+                report.add(CheckResult(
+                    "common_seqs species guard", CheckStatus.WARN,
+                    f"{n_species} species found but common_seqs is set — "
+                    f"common_seqs is single-species only",
+                    group=group))
+
+        # abundance_control matches a sample_name
+        if '7' in stages and self.config.get('run_abundance_analysis', False):
+            ctrl = self.config.get('abundance_control')
+            if ctrl and 'sample_name' in sdf.columns:
+                if ctrl not in sdf['sample_name'].values:
+                    report.add(CheckResult(
+                        "abundance_control match", CheckStatus.FAIL,
+                        f"'{ctrl}' not found in sample_name column",
+                        group=group))
+                else:
+                    report.add(CheckResult(
+                        "abundance_control match", CheckStatus.PASS,
+                        group=group))
+
+    def _preflight_tools(self, report, stages):
+        """Check that required external tools are on PATH."""
+        group = "Tools"
+
+        # AdapterRemoval (stage 0a)
+        if '0a' in stages:
+            if shutil.which('AdapterRemoval'):
+                report.add(CheckResult(
+                    "AdapterRemoval", CheckStatus.PASS, group=group))
+            else:
+                report.add(CheckResult(
+                    "AdapterRemoval", CheckStatus.FAIL,
+                    "Not found on PATH. Install or load module.",
+                    group=group))
+        else:
+            report.add(CheckResult(
+                "AdapterRemoval", CheckStatus.SKIP,
+                "stage 0a not selected", group=group))
+
+        # swipe (stage 1)
+        if '1' in stages:
+            if shutil.which('swipe'):
+                report.add(CheckResult("swipe", CheckStatus.PASS, group=group))
+            else:
+                report.add(CheckResult(
+                    "swipe", CheckStatus.FAIL,
+                    "Not found on PATH. Install or load module.",
+                    group=group))
+        else:
+            report.add(CheckResult(
+                "swipe", CheckStatus.SKIP,
+                "stage 1 not selected", group=group))
 
     def log(self, message, level="INFO"):
         """Log message to file and console"""
@@ -1640,6 +2243,11 @@ def main():
         help='Threads per subprocess (AdapterRemoval/SWIPE). '
              'Default: config threads_per_job or 2'
     )
+    parser.add_argument(
+        '--preflight', action='store_true',
+        help='Validate config, files, database, and tools without running '
+             'the pipeline. Exits with code 0 (pass) or 1 (fail).'
+    )
 
     args = parser.parse_args()
 
@@ -1668,6 +2276,10 @@ def main():
 
     # Parse stages
     stages = PreprocessingPipeline.parse_stages(args.stages)
+
+    # Preflight mode: validate and exit
+    if args.preflight:
+        sys.exit(pipeline.preflight(stages=stages))
 
     pipeline.run(stages=stages)
 

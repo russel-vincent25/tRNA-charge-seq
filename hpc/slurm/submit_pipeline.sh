@@ -61,6 +61,15 @@ fi
 
 MAX_ARRAY_IDX=$((N_SAMPLES - 1))
 
+# --- Preflight validation ---
+echo "Running preflight checks..."
+if ! python -m trnaseq pipeline --config "$CONFIG" --project-dir "$PROJECT_DIR" --preflight; then
+    echo ""
+    echo "ERROR: Preflight checks failed. Fix the issues above before submitting jobs."
+    exit 1
+fi
+echo ""
+
 # --- Ensure jobOutput directory exists ---
 mkdir -p /home/ruv988/jobOutput
 
