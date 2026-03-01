@@ -84,7 +84,7 @@ CPUS_0C1=2
 TIME_0C1="08:00:00"
 MEM_0C1="2G"
 
-# Stage 2+3+5+6: aggregation; I/O-bound (reading JSONs, writing CSVs)
+# Stage 2+3+5+6+7: aggregation; I/O-bound (reading JSONs, writing CSVs)
 # 42 min for 24 samples with 4 CPUs → scales ~linearly with N_SAMPLES/CPUS
 # 16 CPUs keeps 264 samples under 4h; RAM scales with sample count
 CPUS_2356=16
@@ -108,7 +108,7 @@ echo ""
 echo "Resource plan:"
 echo "  Stage 0ab:  ${CPUS_0AB} CPUs, ${MEM_0AB} mem, ${TIME_0AB} time (${N_JOBS_0AB} jobs × ${THREADS_PER_JOB} threads)"
 echo "  Stage 0c+1: ${CPUS_0C1} CPUs, ${MEM_0C1} mem, ${TIME_0C1} time (1 job × ${CPUS_0C1} threads) × ${N_SAMPLES} tasks"
-echo "  Stage 2+3+5+6: ${CPUS_2356} CPUs, ${MEM_2356} mem, ${TIME_2356} time"
+echo "  Stage 2+3+5+6+7: ${CPUS_2356} CPUs, ${MEM_2356} mem, ${TIME_2356} time"
 echo "=============================================================="
 
 # --- Job 0: Stages 0a + 0b (merge + BC split) ---
@@ -127,13 +127,13 @@ JOB1=$(sbatch --parsable \
     "${SCRIPT_DIR}/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
 echo "  JOB1 (stages 0c+1):   $JOB1  [array 0-${MAX_ARRAY_IDX}%${MAX_CONCURRENT}]"
 
-# --- Job 2: Stages 2 + 3 + 5 + 6 (aggregation) ---
-# Single job: stats + charge + fragments + QC + modifications
+# --- Job 2: Stages 2 + 3 + 5 + 6 + 7 (aggregation) ---
+# Single job: stats + charge + fragments + QC + modifications + abundance
 JOB2=$(sbatch --parsable \
     --dependency=afterok:${JOB1} \
     --cpus-per-task=$CPUS_2356 --mem=${MEM_2356} -t ${TIME_2356} \
     "${SCRIPT_DIR}/stage2_6.job" "$CONFIG" "$PROJECT_DIR")
-echo "  JOB2 (stages 2+3+5+6):  $JOB2"
+echo "  JOB2 (stages 2+3+5+6+7):  $JOB2"
 
 echo ""
 echo "Pipeline submitted! Monitor with:"

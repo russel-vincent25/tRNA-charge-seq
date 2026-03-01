@@ -9,7 +9,7 @@ sample_list: "sample_list_RT_comp.xlsx"
 index_list: "/home/ruv988/github_repos/tRNA-charge-seq/utils/index_list_updated.xlsx"
 
 # Input Data
-seq_dir: "data/raw_fastq"
+seq_dir: "raw_fastq"
 
 # tRNA Database
 tRNA_database:
