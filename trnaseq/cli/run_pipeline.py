@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified Preprocessing Pipeline (Stages 0-5)
+Unified Preprocessing Pipeline (Stages 0-7)
 ============================================
 
 Combines all preprocessing and analysis steps into a single script:
@@ -9,18 +9,22 @@ Combines all preprocessing and analysis steps into a single script:
 - Stage 0c: UMI Trimming
 - Stage 1: SWIPE Alignment
 - Stage 2: Stats Collection
-- Stage 3: Charge Quantification (optional)
+- Stage 3: Charge Quantification (optional) + Fragment Analysis
 - Stage 4: Parquet Storage (optional)
 - Stage 5: QC Summary Report (optional)
+- Stage 6: Modification Analysis (optional)
+- Stage 7: Differential Abundance Analysis (optional)
 
 Output:
 - inp_file_df.xlsx (input file summary)
 - sample_df.xlsx (sample information with QC metrics)
 - data/stats_collection/ALL_stats_aggregate.csv (combined statistics)
-- charge_analysis/ (charge quantification results, if enabled)
-- fragment_analysis/ (fragment classification + RT drop-off, if enabled)
+- charge_analysis/ (charge quantification + report, if enabled)
+- fragment_analysis/ (fragment classification + RT drop-off + report, if enabled)
 - qc_reports/ (QC dashboard, if enabled)
 - parquet_data/ (parquet-format data, if enabled)
+- modification_analysis/ (modification calls + report, if enabled)
+- abundance_analysis/ (differential abundance + report, if enabled)
 
 Usage:
     python -m trnaseq pipeline \
@@ -101,6 +105,30 @@ try:
     MOD_REPORT_AVAILABLE = True
 except ImportError:
     MOD_REPORT_AVAILABLE = False
+
+try:
+    from trnaseq.qc.charge_report import ChargeReportGenerator
+    CHARGE_REPORT_AVAILABLE = True
+except ImportError:
+    CHARGE_REPORT_AVAILABLE = False
+
+try:
+    from trnaseq.qc.fragment_report import FragmentReportGenerator
+    FRAGMENT_REPORT_AVAILABLE = True
+except ImportError:
+    FRAGMENT_REPORT_AVAILABLE = False
+
+try:
+    from trnaseq.abundance import DifferentialAbundance
+    ABUNDANCE_AVAILABLE = True
+except ImportError:
+    ABUNDANCE_AVAILABLE = False
+
+try:
+    from trnaseq.qc.abundance_report import AbundanceReportGenerator
+    ABUNDANCE_REPORT_AVAILABLE = True
+except ImportError:
+    ABUNDANCE_REPORT_AVAILABLE = False
 
 
 # ------------------------------------------------------------------
@@ -563,11 +591,16 @@ class PreprocessingPipeline:
         self.log(f"  Levels: {', '.join(charge_levels)}")
 
         try:
+            # tRNA source classification prefixes
+            source_prefixes = self.config.get(
+                'tRNA_source_prefixes', {'Synthetic_': 'synthetic'})
+
             # Initialize quantifier
             quantifier = ChargeQuantifier(
                 stats_csv=str(stats_file),
                 charge_count=charge_count,
-                RPM_count=charge_count
+                RPM_count=charge_count,
+                source_prefixes=source_prefixes,
             )
 
             self.log(f"  Loaded {len(quantifier.stats_df)} alignment records")
@@ -611,6 +644,31 @@ class PreprocessingPipeline:
 
             self.status['stages_completed'].append('3')
             self.log("  Charge quantification complete!")
+
+            # Generate charge report
+            if CHARGE_REPORT_AVAILABLE:
+                try:
+                    sample_df = getattr(self, 'sample_df', None)
+                    charge_tr = self.charge_results.get('transcript')
+                    charge_aa = self.charge_results.get('aa')
+                    if charge_tr is not None and charge_aa is not None and sample_df is not None:
+                        source_prefixes = self.config.get('tRNA_source_prefixes',
+                                                          {'Synthetic_': 'synthetic'})
+                        report_gen = ChargeReportGenerator(
+                            charge_df_transcript=charge_tr,
+                            charge_df_aa=charge_aa,
+                            charge_summary=self.charge_summary_df,
+                            sample_df=sample_df,
+                            source_prefixes=source_prefixes,
+                        )
+                        qc_dir = self.project_dir / 'qc_reports'
+                        qc_dir.mkdir(parents=True, exist_ok=True)
+                        report_path = qc_dir / 'charge_report.html'
+                        report_gen.generate_html_report(report_path)
+                        self.log(f"  Saved: {report_path.name}")
+                except Exception as report_err:
+                    self.log(f"  WARNING: Could not generate charge report: "
+                             f"{report_err}", level="WARN")
 
         except Exception as e:
             self.log(f"ERROR in charge quantification: {str(e)}", level="ERROR")
@@ -657,6 +715,32 @@ class PreprocessingPipeline:
 
             self._fragment_analysis_ran = True
             self.log("  Fragment analysis complete!")
+
+            # Generate fragment report
+            if FRAGMENT_REPORT_AVAILABLE:
+                try:
+                    sample_df = getattr(self, 'sample_df', None)
+                    if sample_df is not None:
+                        source_prefixes = self.config.get('tRNA_source_prefixes',
+                                                          {'Synthetic_': 'synthetic'})
+                        coverage_df = analyser._coverage if analyser._coverage is not None else None
+                        report_gen = FragmentReportGenerator(
+                            fragment_counts_df=analyser._fragment_counts if analyser._fragment_counts is not None else pd.DataFrame(),
+                            rt_dropoff_df=analyser._rt_dropoff if analyser._rt_dropoff is not None else pd.DataFrame(),
+                            fragment_lengths_df=analyser._fragment_lengths if analyser._fragment_lengths is not None else pd.DataFrame(),
+                            fragment_summary_df=summary if summary is not None else pd.DataFrame(),
+                            sample_df=sample_df,
+                            coverage_df=coverage_df,
+                            source_prefixes=source_prefixes,
+                        )
+                        qc_dir = self.project_dir / 'qc_reports'
+                        qc_dir.mkdir(parents=True, exist_ok=True)
+                        report_path = qc_dir / 'fragment_report.html'
+                        report_gen.generate_html_report(report_path)
+                        self.log(f"  Saved: {report_path.name}")
+                except Exception as report_err:
+                    self.log(f"  WARNING: Could not generate fragment report: "
+                             f"{report_err}", level="WARN")
 
         except Exception as e:
             self.log(f"  ERROR in fragment analysis: {e}", level="ERROR")
@@ -993,6 +1077,8 @@ class PreprocessingPipeline:
             self.log("  Phase 6/6: Generating modification QC report...")
             if MOD_REPORT_AVAILABLE:
                 try:
+                    source_prefixes = self.config.get('tRNA_source_prefixes',
+                                                      {'Synthetic_': 'synthetic'})
                     report_gen = ModificationReportGenerator(
                         per_sample_calls=per_sample_calls,
                         aggregated_calls=aggregated_calls if not aggregated_calls.empty else None,
@@ -1000,9 +1086,12 @@ class PreprocessingPipeline:
                         replicate_groups=replicate_groups if replicate_groups else None,
                         ref_dict=extractor.ref_dict,
                         summary_df=summary_df,
+                        source_prefixes=source_prefixes,
                     )
+                    qc_dir = self.project_dir / 'qc_reports'
+                    qc_dir.mkdir(parents=True, exist_ok=True)
                     report_path = report_gen.generate_html_report(
-                        output_dir / 'modification_report.html'
+                        qc_dir / 'modification_report.html'
                     )
                     self.log(f"  Saved modification report: {report_path}")
                 except Exception as report_err:
@@ -1016,6 +1105,87 @@ class PreprocessingPipeline:
 
         except Exception as e:
             self.log(f"ERROR in modification analysis: {str(e)}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="ERROR")
+
+    def stage_7_abundance_analysis(self):
+        """Stage 7: Differential Abundance Analysis (optional)
+
+        Runs DESeq2 via pyDESeq2 to identify differentially abundant tRNAs
+        between conditions. Generates results CSVs and an interactive HTML
+        dashboard.
+        """
+        self.log("=" * 60)
+        self.log("Stage 7: Differential Abundance Analysis")
+        self.log("=" * 60)
+
+        if not ABUNDANCE_AVAILABLE:
+            self.log("WARNING: DifferentialAbundance not available. "
+                     "Skipping stage 7.", level="WARN")
+            self.log("  Install with: pip install pydeseq2", level="WARN")
+            return
+
+        try:
+            stats_file = (self.project_dir / 'data' / 'stats_collection'
+                          / 'ALL_stats_aggregate.csv')
+            if not stats_file.exists():
+                self.log(f"ERROR: Stats file not found: {stats_file}",
+                         level="ERROR")
+                return
+
+            sample_df = getattr(self, 'sample_df', None)
+            if sample_df is None:
+                self.log("ERROR: sample_df not available", level="ERROR")
+                return
+
+            level = self.config.get('abundance_level', 'aa')
+            control = self.config.get('abundance_control', None)
+
+            self.log(f"  Level: {level}")
+            self.log(f"  Control group: {control or '(auto-detect)'}")
+
+            da = DifferentialAbundance(
+                stats_csv=str(stats_file),
+                sample_df=sample_df,
+                level=level,
+                control_group=control,
+            )
+            self.log(f"  Count matrix: {da.count_matrix.shape[0]} samples x "
+                     f"{da.count_matrix.shape[1]} features")
+            self.log(f"  Control: {da.control_group}")
+
+            results = da.run_deseq2()
+            self.log(f"  DESeq2 results: {len(results)} comparisons")
+
+            # Export results
+            abundance_dir = self.project_dir / 'abundance_analysis'
+            da.export_results(abundance_dir)
+            self.log(f"  Saved results to abundance_analysis/")
+
+            # Generate report
+            if ABUNDANCE_REPORT_AVAILABLE and not results.empty:
+                try:
+                    report_gen = AbundanceReportGenerator(
+                        results_df=results,
+                        count_matrix=da.count_matrix,
+                        control_group=da.control_group,
+                        level=level,
+                        condition_map=da.condition_map,
+                    )
+                    qc_dir = self.project_dir / 'qc_reports'
+                    qc_dir.mkdir(parents=True, exist_ok=True)
+                    report_path = qc_dir / 'abundance_report.html'
+                    report_gen.generate_html_report(report_path)
+                    self.log(f"  Saved: abundance_report.html")
+                except Exception as report_err:
+                    self.log(f"  WARNING: Could not generate abundance report: "
+                             f"{report_err}", level="WARN")
+
+            self.status['stages_completed'].append('7')
+            self.log("  Abundance analysis complete!")
+
+        except Exception as e:
+            self.log(f"ERROR in abundance analysis: {str(e)}", level="ERROR")
             import traceback
             self.log(traceback.format_exc(), level="ERROR")
 
@@ -1147,7 +1317,7 @@ class PreprocessingPipeline:
         Returns:
             Set of stage identifiers: {'0a', '0b', '0c', '1', '2', '3', '4', '5'}
         """
-        ALL_STAGES = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6'}
+        ALL_STAGES = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6', '7'}
 
         if stages_str == 'all':
             return ALL_STAGES
@@ -1225,7 +1395,7 @@ class PreprocessingPipeline:
                     e.g. {'2', '3', '5'} to run only stats, charge, and QC.
         """
         if stages is None:
-            stages = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6'}
+            stages = {'0a', '0b', '0c', '1', '2', '3', '4', '5', '6', '7'}
 
         try:
             self.log("Starting tRNA-charge-seq preprocessing pipeline")
@@ -1343,6 +1513,14 @@ class PreprocessingPipeline:
                 else:
                     self.log("Skipping Stage 6: Modification Analysis (disabled in config)")
 
+            if '7' in stages:
+                if self.config.get('run_abundance_analysis', False):
+                    t0 = time.time()
+                    self.stage_7_abundance_analysis()
+                    self.stage_timings['stage_7'] = time.time() - t0
+                else:
+                    self.log("Skipping Stage 7: Abundance Analysis (disabled in config)")
+
             # Collect file metrics and save
             if self.sample_index is not None:
                 self._collect_file_metrics()
@@ -1401,7 +1579,7 @@ class PreprocessingPipeline:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Unified tRNA-charge-seq preprocessing pipeline (Stages 0-5)"
+        description="Unified tRNA-charge-seq preprocessing pipeline (Stages 0-7)"
     )
     parser.add_argument(
         '--config', required=True,

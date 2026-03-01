@@ -13,6 +13,24 @@ import copy
 from typing import Optional, Dict, List, Union
 
 
+def classify_trna_source(trna_name: str, prefixes: dict) -> str:
+    """Classify a tRNA by matching its name against config-driven prefixes.
+
+    Args:
+        trna_name: Full tRNA annotation string.
+        prefixes: {prefix: category} mapping, e.g.
+            {'Synthetic_': 'synthetic', 'Mutant_itRNA_': 'mutant'}.
+            Checked in order; first match wins. Unmatched = 'host'.
+
+    Returns:
+        Category string: 'host', 'mutant', 'synthetic', etc.
+    """
+    for prefix, category in prefixes.items():
+        if trna_name.startswith(prefix):
+            return category
+    return 'host'
+
+
 class ChargeQuantifier:
     """
     Quantifies tRNA charging levels from alignment statistics.
@@ -42,7 +60,8 @@ class ChargeQuantifier:
                  charge_count: str = 'count',
                  RPM_count: str = 'count',
                  excl_align_gap: bool = False,
-                 excl_09_fmax: bool = False):
+                 excl_09_fmax: bool = False,
+                 source_prefixes: Optional[Dict[str, str]] = None):
         """
         Initialize the ChargeQuantifier with alignment statistics.
 
@@ -52,6 +71,8 @@ class ChargeQuantifier:
             RPM_count: Column to use for RPM calculation ('count' or 'UMIcount')
             excl_align_gap: Exclude alignments with gaps
             excl_09_fmax: Exclude alignments with fmax_score < 0.9
+            source_prefixes: {prefix: category} mapping for tRNA source
+                classification. Default: {'Synthetic_': 'synthetic'}.
 
         Raises:
             FileNotFoundError: If stats_csv does not exist
@@ -69,6 +90,7 @@ class ChargeQuantifier:
         self.excl_align_gap = excl_align_gap
         self.excl_09_fmax = excl_09_fmax
         self.charge_filt = dict()
+        self.source_prefixes = source_prefixes or {'Synthetic_': 'synthetic'}
 
         # Define expected column types for the aggregated stats file
         # Note: The CSV may have either 'align_3p_nt' or 'align_3p_nts'
@@ -151,12 +173,14 @@ class ChargeQuantifier:
             axis=1
         )
 
-        # Mark mitochondrial and synthetic control tRNAs
-        df['mito_codon'] = df['tRNA_annotation'].str.contains('mito_tRNA')
-        df['Syn_ctr'] = df.apply(
-            lambda row: 'Synthetic' in row['tRNA_annotation'] and row['species'] != 'ecoli',
-            axis=1
+        # Classify tRNA source using config-driven prefixes
+        df['tRNA_source'] = df['tRNA_annotation'].apply(
+            lambda x: classify_trna_source(x, self.source_prefixes)
         )
+
+        # Backward compat: Syn_ctr and mito_codon
+        df['Syn_ctr'] = df['tRNA_source'] == 'synthetic'
+        df['mito_codon'] = df['tRNA_annotation'].str.contains('mito_tRNA')
 
         return df
 
@@ -262,6 +286,7 @@ class ChargeQuantifier:
             'tRNA_annotation', 'tRNA_anno_short', 'tRNA_annotation_len', 'unique_annotation',
             '5p_cover', '3p_cover', 'align_3p_nts', 'codon', 'anticodon', 'amino_acid',
             'AA_letter', 'AA_codon', 'single_codon', 'single_aa', 'mito_codon', 'Syn_ctr',
+            'tRNA_source',
         ] + count_cols
 
         # Filter to only include existing columns
@@ -421,7 +446,7 @@ class ChargeQuantifier:
         aa_mask = self.charge_df['single_aa']
         charge_df_aa = self.charge_df[aa_mask].groupby([
             'sample_name_unique', 'sample_name', 'replicate', 'barcode',
-            'amino_acid', 'AA_letter', 'mito_codon', 'Syn_ctr'
+            'amino_acid', 'AA_letter', 'mito_codon', 'Syn_ctr', 'tRNA_source'
         ], as_index=False).agg(base_agg).reset_index(drop=True)
         self.charge_filt['aa'] = _recalc_charge(charge_df_aa)
 
@@ -430,7 +455,7 @@ class ChargeQuantifier:
         charge_df_cd = self.charge_df[cd_mask].groupby([
             'sample_name_unique', 'sample_name', 'replicate', 'barcode',
             'codon', 'anticodon', 'AA_codon', 'amino_acid', 'AA_letter',
-            'mito_codon', 'Syn_ctr'
+            'mito_codon', 'Syn_ctr', 'tRNA_source'
         ], as_index=False).agg(base_agg).reset_index(drop=True)
         self.charge_filt['codon'] = _recalc_charge(charge_df_cd)
 
@@ -440,7 +465,7 @@ class ChargeQuantifier:
             'sample_name_unique', 'sample_name', 'replicate', 'barcode',
             'tRNA_annotation', 'tRNA_anno_short', 'tRNA_annotation_len',
             'codon', 'anticodon', 'AA_codon', 'amino_acid', 'AA_letter',
-            'mito_codon', 'Syn_ctr'
+            'mito_codon', 'Syn_ctr', 'tRNA_source'
         ], as_index=False).agg(base_agg).reset_index(drop=True)
         self.charge_filt['tr'] = _recalc_charge(charge_df_tr)
 

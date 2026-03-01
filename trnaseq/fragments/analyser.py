@@ -65,6 +65,7 @@ class FragmentAnalyser:
         self._rt_dropoff = None
         self._fragment_lengths = None
         self._summary = None
+        self._coverage = None
 
     def _discover_samples(self):
         """Auto-detect sample names from *_stats.csv.bz2 files."""
@@ -80,6 +81,7 @@ class FragmentAnalyser:
         frag_parts = []
         rt_parts = []
         len_parts = []
+        cov_parts = []
         summary_rows = []
 
         for sample in self.sample_names:
@@ -89,6 +91,8 @@ class FragmentAnalyser:
             frag_parts.append(result['fragment_counts'])
             rt_parts.append(result['rt_dropoff'])
             len_parts.append(result['fragment_lengths'])
+            if result.get('coverage') is not None:
+                cov_parts.append(result['coverage'])
             summary_rows.append(result['summary'])
 
         self._fragment_counts = (pd.concat(frag_parts, ignore_index=True)
@@ -97,6 +101,8 @@ class FragmentAnalyser:
                             if rt_parts else pd.DataFrame())
         self._fragment_lengths = (pd.concat(len_parts, ignore_index=True)
                                   if len_parts else pd.DataFrame())
+        self._coverage = (pd.concat(cov_parts, ignore_index=True)
+                          if cov_parts else pd.DataFrame())
         self._summary = (pd.DataFrame(summary_rows)
                          if summary_rows else pd.DataFrame())
 
@@ -244,7 +250,20 @@ class FragmentAnalyser:
         else:
             frag_len_df = pd.DataFrame()
 
-        # ---- 4. Sample summary ----
+        # ---- 4. Coverage data (for Behrens/needle plots) ----
+        cov_df = None
+        if 'align_5p_idx' in df.columns and 'amino_acid' in df.columns:
+            cov = (df.groupby(['amino_acid', 'align_5p_idx'])[count]
+                   .sum().reset_index()
+                   .rename(columns={'align_5p_idx': 'position', count: 'count'}))
+            aa_len = (df.groupby('amino_acid')['tRNA_annotation_len']
+                      .max().reset_index()
+                      .rename(columns={'tRNA_annotation_len': 'max_tRNA_len'}))
+            cov = cov.merge(aa_len, on='amino_acid', how='left')
+            cov['sample_name_unique'] = sample_name
+            cov_df = cov
+
+        # ---- 5. Sample summary ----
         n_total = int(frag_df['total_reads'].sum())
         n_fl = int(frag_df['full_length'].sum())
         n_rt = int(frag_df['rt_dropoff'].sum())
@@ -272,6 +291,7 @@ class FragmentAnalyser:
             'fragment_counts': frag_df,
             'rt_dropoff': rt_pos,
             'fragment_lengths': frag_len_df,
+            'coverage': cov_df,
             'summary': summary_row,
         }
 
@@ -327,6 +347,7 @@ class FragmentAnalyser:
             'rt_dropoff_positions': self._rt_dropoff,
             'fragment_lengths': self._fragment_lengths,
             'fragment_summary': self._summary,
+            'coverage_data': self._coverage,
         }
 
         for name, df in datasets.items():

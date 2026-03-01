@@ -37,6 +37,7 @@ class ModificationReportGenerator:
         replicate_groups: Optional[Dict[str, List[str]]] = None,
         ref_dict: Optional[Dict[str, dict]] = None,
         summary_df: Optional[pd.DataFrame] = None,
+        source_prefixes: Optional[dict] = None,
     ):
         """
         Parameters
@@ -53,6 +54,8 @@ class ModificationReportGenerator:
             {trna_name: {'seq': str, 'seq_len': int}} for 3' alignment.
         summary_df : DataFrame, optional
             modification_summary (one row per sample).
+        source_prefixes : dict, optional
+            {prefix: category} for classifying tRNA sources (e.g. synthetic).
         """
         self.per_sample_calls = per_sample_calls
         self.aggregated_calls = aggregated_calls
@@ -60,6 +63,7 @@ class ModificationReportGenerator:
         self.replicate_groups = replicate_groups
         self.ref_dict = ref_dict or {}
         self.summary_df = summary_df
+        self.source_prefixes = source_prefixes
 
     # ------------------------------------------------------------------
     # Main entry
@@ -91,6 +95,11 @@ class ModificationReportGenerator:
         p4 = self._panel_fc_heatmap()
         if p4:
             panels.append(p4)
+
+        # 5. Synthetic false positives
+        p5 = self._panel_synthetic_false_positives()
+        if p5:
+            panels.append(p5)
 
         body = '\n'.join(panels) if panels else '<p>No modification data available for report.</p>'
 
@@ -377,3 +386,91 @@ h2 {{ color: #2d3436; margin-top: 40px; }}
         )
         div = self._fig_to_div(fig)
         return f'<h2>Fold-Change Heatmap (Consensus)</h2><div class="card">{div}</div>'
+
+    # ------------------------------------------------------------------
+    # Panel 5: synthetic tRNA false positives
+    # ------------------------------------------------------------------
+
+    def _panel_synthetic_false_positives(self):
+        """Bar chart of modification calls on synthetic control tRNAs."""
+        if not self.source_prefixes or not self.per_sample_calls:
+            return ''
+
+        from trnaseq.charge.quantifier import classify_trna_source
+
+        # Collect all calls across samples for synthetic tRNAs
+        syn_counts = {}  # {sample: n_calls_on_synthetics}
+        syn_details = []
+
+        for sample, calls_df in self.per_sample_calls.items():
+            if calls_df is None or calls_df.empty:
+                syn_counts[sample] = 0
+                continue
+
+            trna_col = 'trna_name' if 'trna_name' in calls_df.columns else None
+            if trna_col is None:
+                syn_counts[sample] = 0
+                continue
+
+            calls_df = calls_df.copy()
+            calls_df['_source'] = calls_df[trna_col].apply(
+                lambda x: classify_trna_source(x, self.source_prefixes)
+            )
+            syn_calls = calls_df[calls_df['_source'] == 'synthetic']
+            syn_counts[sample] = len(syn_calls)
+
+            if not syn_calls.empty:
+                detail = syn_calls[[trna_col]].copy()
+                detail['sample'] = sample
+                # Include available detail columns
+                for col in ['position', 'modification', 'mismatch_rate', 'fold_change']:
+                    if col in syn_calls.columns:
+                        detail[col] = syn_calls[col].values
+                syn_details.append(detail)
+
+        # If no synthetic calls at all, show a positive confirmation
+        total_syn_calls = sum(syn_counts.values())
+
+        samples = sorted(syn_counts.keys())
+        counts = [syn_counts[s] for s in samples]
+
+        fig = go.Figure(go.Bar(
+            x=samples,
+            y=counts,
+            marker_color=['#00b894' if c == 0 else '#d63031' for c in counts],
+            text=counts,
+            textposition='auto',
+        ))
+
+        # Add background error rate annotation if available
+        bg_text = ''
+        if self.summary_df is not None and 'background_error_rate' in self.summary_df.columns:
+            bg_rate = self.summary_df['background_error_rate'].mean()
+            bg_source = (self.summary_df['bg_source'].iloc[0]
+                         if 'bg_source' in self.summary_df.columns else 'unknown')
+            bg_text = (f'<br><i>Background error rate: {bg_rate:.4f} '
+                       f'(source: {bg_source})</i>')
+
+        fig.update_layout(
+            title=f'Modification Calls on Synthetic Controls '
+                  f'(total: {total_syn_calls}, expected: 0)',
+            xaxis_title='Sample',
+            yaxis_title='Number of false-positive calls',
+            height=max(350, len(samples) * 20 + 200),
+        )
+
+        div = self._fig_to_div(fig)
+
+        # Build detail table if any false positives exist
+        detail_html = ''
+        if syn_details:
+            detail_df = pd.concat(syn_details, ignore_index=True)
+            detail_html = (
+                '<h3>False Positive Details</h3>'
+                '<div style="overflow-x:auto; max-height:300px">'
+                + detail_df.to_html(index=False, classes='', border=0)
+                + '</div>'
+            )
+
+        return (f'<h2>Synthetic Control False Positives</h2>'
+                f'<div class="card">{div}{bg_text}{detail_html}</div>')

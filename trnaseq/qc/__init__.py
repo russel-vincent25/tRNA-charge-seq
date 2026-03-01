@@ -7,4 +7,25 @@ try:
 except ImportError:
     ModificationReportGenerator = None
 
-__all__ = ['QCReportGenerator', 'ModificationReportGenerator']
+try:
+    from trnaseq.qc.charge_report import ChargeReportGenerator
+except ImportError:
+    ChargeReportGenerator = None
+
+try:
+    from trnaseq.qc.fragment_report import FragmentReportGenerator
+except ImportError:
+    FragmentReportGenerator = None
+
+try:
+    from trnaseq.qc.abundance_report import AbundanceReportGenerator
+except ImportError:
+    AbundanceReportGenerator = None
+
+__all__ = [
+    'QCReportGenerator',
+    'ModificationReportGenerator',
+    'ChargeReportGenerator',
+    'FragmentReportGenerator',
+    'AbundanceReportGenerator',
+]

@@ -577,16 +577,17 @@ tr:hover {{ background: #f0f3f8; }}
 
 
 def _discrete_palette(n):
-    """Return n distinct hex colors."""
-    base = ['#0984e3', '#00b894', '#d63031', '#6c5ce7', '#fdcb6e',
-            '#e17055', '#00cec9', '#636e72', '#fab1a0', '#81ecec']
-    if n <= len(base):
-        return base[:n]
-    # Extend with evenly spaced hues
+    """Return n distinct hex colors from matplotlib tab20."""
+    import matplotlib
+    cmap = matplotlib.colormaps['tab20']
+    tab20 = [matplotlib.colors.rgb2hex(cmap(i)) for i in range(20)]
+    if n <= 20:
+        return tab20[:n]
+    # Extend with evenly spaced hues for n > 20
     import colorsys
     extra = []
-    for i in range(n - len(base)):
-        h = (len(base) + i) / (n + 1)
+    for i in range(n - 20):
+        h = (20 + i) / (n + 1)
         r, g, b = colorsys.hls_to_rgb(h, 0.5, 0.7)
         extra.append(f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}')
-    return base + extra
+    return tab20 + extra
