@@ -49,6 +49,7 @@ tmp/
 
 # CLI script test project (local reference only)
 /projects/example_script_test/
+/projects/RT-comp_script/
 
 # Simulation stuff
 utils/code-of-limited-use/sim_data/*
