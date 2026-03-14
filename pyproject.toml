@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "trnaseq"
 version = "1.0.1"
 description = "tRNA-seq analysis toolkit: charge quantification, QC, and visualization"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "numpy",
     "pandas",

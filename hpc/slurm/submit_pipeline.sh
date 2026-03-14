@@ -98,9 +98,10 @@ MEM_0C1="2G"
 # 16 CPUs keeps 264 samples under 4h; RAM scales with sample count
 CPUS_2356=16
 if [ $N_SAMPLES -lt 64 ]; then MEM_2356="16G"; else MEM_2356="32G"; fi
-# ~1.75 min per sample per CPU → estimate wall time, minimum 1h, cap 12h
-TIME_2356_MIN=$(( (N_SAMPLES * 2 / CPUS_2356 + 1) * 3 ))
-if [ $TIME_2356_MIN -lt 60 ]; then TIME_2356_MIN=60; fi
+# ~1.75 min per sample per CPU for stats/charge/QC, plus ~30 min fixed
+# overhead for modification analysis (PSCM + crosstalk). Min 2h, cap 12h.
+TIME_2356_MIN=$(( (N_SAMPLES * 2 / CPUS_2356 + 1) * 3 + 30 ))
+if [ $TIME_2356_MIN -lt 120 ]; then TIME_2356_MIN=120; fi
 if [ $TIME_2356_MIN -gt 720 ]; then TIME_2356_MIN=720; fi
 TIME_2356=$(printf "%02d:%02d:00" $((TIME_2356_MIN / 60)) $((TIME_2356_MIN % 60)))
 
