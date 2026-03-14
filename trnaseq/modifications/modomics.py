@@ -39,26 +39,55 @@ from Bio import Align
 # This is used to strip modification annotations from MODOMICS sequence strings
 # so that the underlying base sequence can be aligned to a reference FASTA.
 MODOMICS_TO_BASE: Dict[str, str] = {
-    'D': 'U',       # Dihydrouridine -> U
+    # Verified against mod_nomenclature_info.csv (hand-curated reference table).
+    # Column "Reference NucleoBase" from Mod_nomenclature.xlsx provides the
+    # parent base for each MODOMICS single-character symbol.
+    #
+    # --- well-characterised symbols (common across organisms) ---
+    'D': 'U',       # dihydrouridine -> U
     'T': 'U',       # m5U (ribothymidine) -> U
-    'P': 'U',       # Pseudouridine (Psi) -> U
-    '7': 'G',       # m7G -> G
-    'K': 'G',       # m1G -> G
-    '4': 'U',       # s4U -> U
-    'R': 'G',       # m2,2G -> G
-    'L': 'G',       # m2G -> G
-    '\u0462': 'A',  # Cyrillic Yat = m1A -> A
-    '\u0429': 'C',  # Cyrillic Shcha = m3C -> C
-    '?': 'C',       # m5C -> C
-    'I': 'A',       # Inosine -> A (deaminated)
-    'Q': 'G',       # Queuosine -> G
+    'P': 'U',       # pseudouridine (Ψ) -> U
+    '7': 'G',       # m7G (7-methylguanosine) -> G
+    'K': 'G',       # m1G (1-methylguanosine) -> G
+    '4': 'U',       # s4U (4-thiouridine) -> U
+    'R': 'G',       # m2,2G (N2,N2-dimethylguanosine) -> G
+    'L': 'G',       # m2G (N2-methylguanosine) -> G
+    '\u0462': 'A',  # Ѣ  m1A (1-methyladenosine) -> A
+    '\u0429': 'C',  # Щ  m3C (3-methylcytidine) -> C
+    'I': 'A',       # inosine -> A (deaminated)
+    'Q': 'G',       # queuosine -> G
+    # --- symbols from E. coli MODOMICS sequences (verified via nomenclature) ---
+    'V': 'U',       # cmo5U (uridine 5-oxyacetic acid) -> U
+    '?': 'G',       # xG (unknown modified guanosine) -> G
+    '#': 'G',       # Gm (2'-O-methylguanosine) -> G
+    'J': 'U',       # Um (2'-O-methyluridine) -> U
+    '$': 'U',       # cmnm5s2U -> U
+    'S': 'U',       # mnm5s2U -> U
+    'B': 'C',       # Cm (2'-O-methylcytidine) -> C
+    '*': 'A',       # ms2i6A -> A
+    ')': 'U',       # cmnm5Um -> U
+    'M': 'C',       # ac4C (N4-acetylcytidine) -> C
+    'E': 'A',       # m6t6A -> A
+    '6': 'A',       # t6A (N6-threonylcarbamoyladenosine) -> A
+    'X': 'U',       # acp3U (3-(3-amino-3-carboxypropyl)uridine) -> U
+    '{': 'U',       # mnm5U (5-methylaminomethyluridine) -> U
+    'Y': 'U',       # modified U
+    'Z': 'A',       # modified A
+    '}': 'U',       # modified U
+    '\u027F': 'A',  # ɿ  m2A (2-methyladenosine) -> A
+    '\u02A4': 'C',  # ʤ  s2C (2-thiocytidine) -> C
+    '\u0416': 'A',  # Ж  m6A (N6-methyladenosine) -> A
+    '\u0427': 'A',  # Ч  modified A
+    '\u046E': 'G',  # Ѯ  modified G
+    '\u2284': 'G',  # ⊄  gluQ (glutamyl-queuosine) -> G
+    '\u3446': 'U',  # 㑆  modified U
 }
 
 # Map modification symbols to their short names.
 MODOMICS_SYMBOL_NAMES: Dict[str, str] = {
-    'D': 'D',        # Dihydrouridine
+    'D': 'D',        # dihydrouridine
     'T': 'm5U',      # 5-methyluridine
-    'P': 'Psi',      # Pseudouridine
+    'P': 'Psi',      # pseudouridine
     '7': 'm7G',      # 7-methylguanosine
     'K': 'm1G',      # 1-methylguanosine
     '4': 's4U',      # 4-thiouridine
@@ -66,9 +95,26 @@ MODOMICS_SYMBOL_NAMES: Dict[str, str] = {
     'L': 'm2G',      # N2-methylguanosine
     '\u0462': 'm1A', # 1-methyladenosine
     '\u0429': 'm3C', # 3-methylcytidine
-    '?': 'm5C',      # 5-methylcytidine
-    'I': 'I',        # Inosine
-    'Q': 'Q',        # Queuosine
+    'I': 'I',        # inosine
+    'Q': 'Q',        # queuosine
+    'V': 'cmo5U',    # uridine 5-oxyacetic acid
+    '?': 'xG',       # unknown modified guanosine
+    '#': 'Gm',       # 2'-O-methylguanosine
+    'J': 'Um',       # 2'-O-methyluridine
+    '$': 'cmnm5s2U', # 5-carboxymethylaminomethyl-2-thiouridine
+    'S': 'mnm5s2U',  # 5-methylaminomethyl-2-thiouridine
+    'B': 'Cm',       # 2'-O-methylcytidine
+    '*': 'ms2i6A',   # 2-methylthio-N6-isopentenyladenosine
+    ')': 'cmnm5Um',  # 5-carboxymethylaminomethyl-2'-O-methyluridine
+    'M': 'ac4C',     # N4-acetylcytidine
+    'E': 'm6t6A',    # N6-methyl-N6-threonylcarbamoyladenosine
+    '6': 't6A',      # N6-threonylcarbamoyladenosine
+    'X': 'acp3U',    # 3-(3-amino-3-carboxypropyl)uridine
+    '{': 'mnm5U',    # 5-methylaminomethyluridine
+    '\u027F': 'm2A', # 2-methyladenosine
+    '\u02A4': 's2C', # 2-thiocytidine
+    '\u0416': 'm6A', # N6-methyladenosine
+    '\u2284': 'gluQ', # glutamyl-queuosine
 }
 
 # Map modification short names to their expected RT signature type.
@@ -78,7 +124,7 @@ MOD_RT_SIGNATURES: Dict[str, str] = {
     'D': 'rt_stop',       # Dihydrouridine causes RT stops
     'm5U': 'silent',      # Ribothymidine usually silent
     'Psi': 'silent',      # Pseudouridine silent without CMC treatment
-    'm7G': 'mismatch',    # G->A mismatch
+    'm7G': 'mismatch',    # G->C/A mismatch (enzyme-dependent)
     'm1G': 'rt_stop',     # Strong RT stop
     's4U': 'mismatch',    # Misincorporation
     'm22G': 'mismatch',   # G->A mismatch
@@ -103,6 +149,15 @@ _ORGANISM_CSV_MAP: Dict[str, str] = {
     'Mus musculus': 'mouse_known_modifications.csv',
 }
 
+# Common short aliases → canonical organism names used in _ORGANISM_CSV_MAP.
+_ORGANISM_ALIASES: Dict[str, str] = {
+    'ecoli': 'Escherichia coli',
+    'e_coli': 'Escherichia coli',
+    'e.coli': 'Escherichia coli',
+    'human': 'Homo sapiens',
+    'mouse': 'Mus musculus',
+}
+
 # MODOMICS API base URL.
 _MODOMICS_API_BASE = 'https://genesilico.pl/modomics/api'
 
@@ -122,6 +177,30 @@ def _cache_path(organism: str) -> Path:
     """Return the cache file path for a given organism's MODOMICS data."""
     safe_name = organism.replace(' ', '_').lower()
     return _cache_dir() / f'modomics_{safe_name}_trna.json'
+
+
+def _strip_anticodon(anticodon_raw: str) -> str:
+    """Strip modification symbols from a MODOMICS anticodon string.
+
+    Uses :data:`MODOMICS_TO_BASE` to convert modified wobble-position
+    symbols back to their parent base.
+
+    Args:
+        anticodon_raw: 3-character anticodon string from MODOMICS API.
+
+    Returns:
+        Canonical anticodon string (e.g. ``'VGC'`` → ``'UGC'``).
+        Unrecognised symbols are replaced with ``'N'``.
+    """
+    result = []
+    for c in anticodon_raw:
+        if c.upper() in 'ACGU':
+            result.append(c.upper())
+        elif c in MODOMICS_TO_BASE:
+            result.append(MODOMICS_TO_BASE[c])
+        else:
+            result.append('N')
+    return ''.join(result)
 
 
 def _strip_modomics_sequence(modomics_seq: str) -> Tuple[str, List[Tuple[int, str, str]]]:
@@ -153,8 +232,12 @@ def _strip_modomics_sequence(modomics_seq: str) -> Tuple[str, List[Tuple[int, st
             mod_name = MODOMICS_SYMBOL_NAMES.get(char, char)
             mods.append((pos, char, mod_name))
             pos += 1
-        # Skip characters that are neither canonical bases nor known mod symbols
-        # (e.g. whitespace or annotation characters).
+        elif not char.isspace():
+            # Unknown modification symbol — use 'N' to preserve alignment.
+            base_chars.append('N')
+            mods.append((pos, char, f'unknown({char})'))
+            pos += 1
+        # Skip only whitespace / annotation characters.
 
     base_seq = ''.join(base_chars)
     return base_seq, mods
@@ -193,10 +276,12 @@ class MODOMICSAnnotator:
             fallback_dir: Directory containing fallback CSV files. Defaults to
                           the ``data/`` subdirectory next to this module.
         """
-        self.organism = organism
+        self.organism = _ORGANISM_ALIASES.get(organism.lower().strip(), organism)
         self.fallback_dir = Path(fallback_dir) if fallback_dir else Path(__file__).parent / 'data'
         self._modifications_df: Optional[pd.DataFrame] = None
         self._mod_symbol_map: Optional[Dict[str, str]] = None
+        # Map (isotype, anticodon) → raw MODOMICS sequence for alignment-based mapping
+        self._modomics_sequences: Dict[Tuple[str, str], str] = {}
 
     # ------------------------------------------------------------------
     # Data retrieval
@@ -227,7 +312,17 @@ class MODOMICSAnnotator:
             try:
                 with open(cache_file, 'r', encoding='utf-8') as fh:
                     cached = json.load(fh)
-                df = pd.DataFrame(cached)
+                # Cache format v2: dict with 'records' and 'sequences' keys
+                if isinstance(cached, dict) and 'records' in cached:
+                    df = pd.DataFrame(cached['records'])
+                    seqs = cached.get('sequences', {})
+                    for key_str, seq in seqs.items():
+                        parts = key_str.split('|', 1)
+                        if len(parts) == 2:
+                            self._modomics_sequences[(parts[0], parts[1])] = seq
+                else:
+                    # Legacy format: list of records (no sequences)
+                    df = pd.DataFrame(cached)
                 if not df.empty:
                     self._modifications_df = df
                     return df
@@ -257,17 +352,33 @@ class MODOMICSAnnotator:
 
         # Parse sequences into modification records
         records: List[Dict] = []
-        entries = seq_data if isinstance(seq_data, list) else seq_data.get('results', [])
+        # API may return: a list, a dict with 'results' key, or a dict-of-dicts keyed by ID
+        if isinstance(seq_data, list):
+            entries = seq_data
+        elif 'results' in seq_data:
+            entries = seq_data['results']
+        else:
+            # Dict keyed by numeric IDs (e.g. {'1': {...}, '2': {...}, ...})
+            entries = list(seq_data.values())
 
         for entry in entries:
             modomics_seq = entry.get('sequence', entry.get('seq', ''))
             subtype = entry.get('subtype', '')
-            anticodon = entry.get('anticodon', '')
+            anticodon_raw = entry.get('anticodon', '')
+
+            # Strip modification symbols from anticodon and convert to DNA
+            anticodon = _strip_anticodon(anticodon_raw).replace('U', 'T')
 
             # Parse isotype from subtype (e.g. "tRNA-Ala" -> "Ala")
             isotype = subtype.replace('tRNA-', '').replace('tRNA', '').strip()
             if not isotype:
                 isotype = entry.get('isotype', 'unknown')
+
+            # Store raw MODOMICS sequence for alignment-based position mapping
+            if modomics_seq:
+                key = (isotype.lower(), anticodon.upper())
+                if key not in self._modomics_sequences:
+                    self._modomics_sequences[key] = modomics_seq
 
             # Strip modification symbols to find positions
             _base_seq, mods = _strip_modomics_sequence(modomics_seq)
@@ -288,11 +399,19 @@ class MODOMICSAnnotator:
 
         df = pd.DataFrame(records)
 
-        # Cache results
+        # Cache results (v2 format: records + raw sequences)
         try:
             cache_file.parent.mkdir(parents=True, exist_ok=True)
+            seqs_serialised = {
+                f'{iso}|{ac}': seq
+                for (iso, ac), seq in self._modomics_sequences.items()
+            }
+            cache_data = {
+                'records': records,
+                'sequences': seqs_serialised,
+            }
             with open(cache_file, 'w', encoding='utf-8') as fh:
-                json.dump(records, fh, ensure_ascii=False, indent=2)
+                json.dump(cache_data, fh, ensure_ascii=False, indent=2)
         except OSError:
             pass  # Non-fatal -- caching is best-effort
 
@@ -381,6 +500,10 @@ class MODOMICSAnnotator:
 
         df = pd.read_csv(csv_path, keep_default_na=False)
 
+        # Rename sprinzl_position → position so merges work
+        if 'sprinzl_position' in df.columns and 'position' not in df.columns:
+            df = df.rename(columns={'sprinzl_position': 'position'})
+
         # Normalise column names to the canonical schema
         rename_map = {}
         expected_cols = {
@@ -403,7 +526,45 @@ class MODOMICSAnnotator:
             ).fillna('unknown')
 
         self._modifications_df = df
+
+        # Load companion MODOMICS sequences JSON (if available) so that
+        # alignment-based position mapping works even in fallback mode.
+        if not self._modomics_sequences:
+            self._load_fallback_sequences(org)
+
         return df
+
+    def _load_fallback_sequences(self, organism: Optional[str] = None) -> None:
+        """Load raw MODOMICS sequences from a shipped JSON companion file.
+
+        The JSON maps ``"isotype|anticodon"`` keys to MODOMICS sequence
+        strings (containing modification symbols).  This allows
+        :meth:`get_known_mods_linear` to use alignment-based position
+        mapping even when the MODOMICS API was never contacted.
+        """
+        org = organism or self.organism
+
+        # Build candidate filenames: try the canonical name, all known
+        # aliases that map to this organism, and the raw org string.
+        name_variants = set()
+        name_variants.add(org.replace(' ', '_').lower())
+        for alias, canonical in _ORGANISM_ALIASES.items():
+            if canonical == org:
+                name_variants.add(alias.replace(' ', '_').lower())
+
+        for name_variant in sorted(name_variants):
+            json_path = self.fallback_dir / f'{name_variant}_modomics_sequences.json'
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as fh:
+                        seqs = json.load(fh)
+                    for key_str, seq in seqs.items():
+                        parts = key_str.split('|', 1)
+                        if len(parts) == 2:
+                            self._modomics_sequences[(parts[0], parts[1])] = seq
+                except (json.JSONDecodeError, OSError):
+                    pass
+                return
 
     def get_modifications(self, use_api: bool = True) -> pd.DataFrame:
         """Get tRNA modifications, trying the API first then the fallback.
@@ -426,7 +587,13 @@ class MODOMICSAnnotator:
 
         if use_api:
             try:
-                return self.fetch_modifications()
+                df = self.fetch_modifications()
+                if not df.empty:
+                    return df
+                warnings.warn(
+                    "MODOMICS API returned no modifications; falling back to CSV.",
+                    stacklevel=2,
+                )
             except (RuntimeError, Exception) as exc:
                 warnings.warn(
                     f"MODOMICS API fetch failed ({exc}); falling back to CSV.",
@@ -531,13 +698,192 @@ class MODOMICSAnnotator:
         return results
 
     # ------------------------------------------------------------------
+    # Sprinzl → linear position mapping
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def sprinzl_to_linear(
+        sprinzl_pos: str,
+        anticodon_linear_start: int,
+    ) -> Optional[int]:
+        """Convert a Sprinzl position to a linear (1-based) position.
+
+        Uses the anticodon as a structural landmark.  Sprinzl position 34
+        is defined as the first anticodon nucleotide, so the offset is:
+
+            offset = anticodon_linear_start - 34
+
+        Positions with letter suffixes (e.g. ``20a``) are handled by
+        incrementing from the base number.
+
+        Args:
+            sprinzl_pos: Sprinzl position string (e.g. ``'37'``, ``'20a'``).
+            anticodon_linear_start: 1-based linear position of the first
+                anticodon nucleotide in the reference sequence.
+
+        Returns:
+            1-based linear position, or *None* if the input cannot be parsed.
+        """
+        try:
+            # Strip letter suffixes (e.g. '20a' → 20, extra=1)
+            s = str(sprinzl_pos).strip()
+            digits = ''
+            extra = 0
+            for ch in s:
+                if ch.isdigit():
+                    digits += ch
+                elif ch.isalpha():
+                    extra = ord(ch.lower()) - ord('a') + 1
+            if not digits:
+                return None
+            base = int(digits)
+            offset = anticodon_linear_start - 34
+            return base + extra + offset
+        except (ValueError, TypeError):
+            return None
+
+    def get_known_mods_linear(
+        self,
+        trna_name: str,
+        ref_seq: str,
+        anticodon_linear_start: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Get known modifications for a tRNA with positions mapped to linear coordinates.
+
+        Uses alignment-based mapping when a MODOMICS sequence is available for
+        this tRNA's isotype/anticodon. Falls back to the heuristic
+        :meth:`sprinzl_to_linear` (anticodon offset) when no raw sequence exists
+        (e.g. CSV-only fallback data).
+
+        Args:
+            trna_name: tRNA name (parsed for isotype/anticodon).
+            ref_seq: Reference FASTA sequence (DNA or RNA). Used for
+                alignment-based mapping via :meth:`map_to_reference`.
+            anticodon_linear_start: Optional 1-based linear position of the
+                anticodon. Used as fallback when alignment is not possible.
+
+        Returns:
+            DataFrame with ``linear_position`` column added, rows with
+            unmappable or out-of-range positions removed.
+        """
+        # Parse tRNA name for isotype/anticodon lookup
+        parts = trna_name.split('-')
+        if len(parts) < 3:
+            return pd.DataFrame()
+
+        isotype = parts[1].lower()
+        anticodon = parts[2].upper()
+        ref_len = len(ref_seq) if ref_seq else 0
+
+        # Try alignment-based mapping: exact (isotype, anticodon) first
+        modomics_seq = self._modomics_sequences.get((isotype, anticodon))
+        if modomics_seq and ref_seq:
+            result = self._align_and_map(modomics_seq, ref_seq)
+            if result is not None:
+                return result
+
+        # Isotype-level fallback: use a same-isotype sequence if available.
+        # Anticodon-loop positions (Sprinzl 32-38) are excluded because
+        # wobble/position-37 modifications are anticodon-specific.
+        if ref_seq:
+            candidates = {
+                k: v for k, v in self._modomics_sequences.items()
+                if k[0] == isotype and k[1] != anticodon
+            }
+            if candidates:
+                # Pick the candidate; prefer one with most modifications
+                donor_key = max(
+                    candidates,
+                    key=lambda k: sum(
+                        1 for c in candidates[k] if c in MODOMICS_TO_BASE
+                    ),
+                )
+                donor_seq = candidates[donor_key]
+                result = self._align_and_map(
+                    donor_seq, ref_seq,
+                    exclude_anticodon_loop=True,
+                )
+                if result is not None:
+                    return result
+
+        # Last resort: use CSV/API data with heuristic Sprinzl→linear mapping
+        known = self.get_known_modifications(trna_name)
+        if known.empty:
+            return known
+
+        if anticodon_linear_start is None:
+            return pd.DataFrame()
+
+        known = known.copy()
+        known['linear_position'] = known['position'].apply(
+            lambda p: self.sprinzl_to_linear(p, anticodon_linear_start)
+        )
+        # Drop rows where mapping failed or is out of range
+        known = known.dropna(subset=['linear_position'])
+        known['linear_position'] = known['linear_position'].astype(int)
+        known = known[(known['linear_position'] >= 1) & (known['linear_position'] <= ref_len)]
+        return known.reset_index(drop=True)
+
+    def _align_and_map(
+        self,
+        modomics_seq: str,
+        ref_seq: str,
+        exclude_anticodon_loop: bool = False,
+    ) -> Optional[pd.DataFrame]:
+        """Align a MODOMICS sequence to a reference and return mapped modifications.
+
+        Args:
+            modomics_seq: MODOMICS sequence string with modification symbols.
+            ref_seq: Reference FASTA sequence.
+            exclude_anticodon_loop: If True, drop modifications whose
+                MODOMICS-sequence position falls in the anticodon loop
+                (0-based positions 31-37, i.e. Sprinzl 32-38).  This is
+                used for isotype-level transfer where anticodon-specific
+                modifications (wobble, position 37) may differ between
+                isodecoders.
+
+        Returns:
+            DataFrame with ``linear_position`` column, or None if mapping
+            produced no usable rows.
+        """
+        mapped = self.map_to_reference(modomics_seq, ref_seq)
+        if not mapped:
+            return None
+
+        ref_len = len(ref_seq)
+        rows = []
+        for modomics_pos, linear_pos, short_name, rt_sig in mapped:
+            if linear_pos < 1:
+                continue
+            # Anticodon loop: MODOMICS 1-based positions 32-38
+            if exclude_anticodon_loop and 32 <= modomics_pos <= 38:
+                continue
+            rows.append({
+                'position': linear_pos,
+                'linear_position': linear_pos,
+                'modification_short_name': short_name,
+                'rt_signature_type': rt_sig,
+            })
+
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows).drop_duplicates(
+            subset=['linear_position', 'modification_short_name']
+        )
+        df = df[(df['linear_position'] >= 1) & (df['linear_position'] <= ref_len)]
+        return df.reset_index(drop=True) if not df.empty else None
+
+    # ------------------------------------------------------------------
     # Annotation
     # ------------------------------------------------------------------
 
     def annotate_signatures(
         self,
         signature_df: pd.DataFrame,
-        trna_name: str
+        trna_name: str,
+        ref_seq: Optional[str] = None,
+        anticodon_linear_start: Optional[int] = None,
     ) -> pd.DataFrame:
         """Merge observed RT signatures with known MODOMICS modifications.
 
@@ -545,25 +891,41 @@ class MODOMICSAnnotator:
         DataFrame is preserved. Positions that coincide with known
         modifications receive annotation columns; others get NaN.
 
+        Position mapping strategy (in priority order):
+
+        1. **Alignment-based** (preferred): when a MODOMICS sequence is
+           available, align it to *ref_seq* via :meth:`map_to_reference`.
+        2. **Heuristic**: use *anticodon_linear_start* to compute a
+           Sprinzl→linear offset.
+        3. **No mapping**: merge on raw Sprinzl positions (may mismatch).
+
         Args:
-            signature_df: DataFrame from
-                :meth:`~trnaseq.modifications.rt_signatures.RTSignatureAnalyzer.identify_signature_positions`.
-                Must contain a ``position`` column (1-based linear positions).
-            trna_name: tRNA name used to look up known modifications. The name
-                is parsed using the convention
-                ``{prefix}_tRNA-{aa}-{anticodon}-{copy}-{allele}``.
+            signature_df: DataFrame with a ``position`` column (1-based linear).
+            trna_name: tRNA name (parsed for isotype/anticodon).
+            ref_seq: Reference FASTA sequence for alignment-based mapping.
+            anticodon_linear_start: Fallback 1-based anticodon position.
 
         Returns:
             A copy of *signature_df* with added columns:
-
-            - ``known_modification``: Short name of the known modification at
-              this position (or NaN).
-            - ``modification_full_name``: Full chemical name.
-            - ``expected_rt_signature``: Expected RT signature type from
-              MODOMICS (e.g. 'mismatch', 'rt_stop', 'combined', 'silent').
-            - ``is_known_modification``: Boolean flag.
+            ``known_modification``, ``modification_full_name``,
+            ``expected_rt_signature``, ``is_known_modification``.
         """
-        known_df = self.get_known_modifications(trna_name)
+        # Get known modifications with linear positions
+        if ref_seq is not None:
+            known_df = self.get_known_mods_linear(
+                trna_name, ref_seq,
+                anticodon_linear_start=anticodon_linear_start,
+            )
+            merge_position_col = 'linear_position'
+        elif anticodon_linear_start is not None:
+            known_df = self.get_known_mods_linear(
+                trna_name, '',
+                anticodon_linear_start=anticodon_linear_start,
+            )
+            merge_position_col = 'linear_position'
+        else:
+            known_df = self.get_known_modifications(trna_name)
+            merge_position_col = 'position'
 
         result = signature_df.copy()
 
@@ -574,10 +936,14 @@ class MODOMICSAnnotator:
             result['is_known_modification'] = False
             return result
 
-        # Prepare known modifications for merge (keep relevant columns)
-        merge_cols = ['position', 'modification_short_name',
-                      'modification_full_name', 'rt_signature_type']
-        known_subset = known_df[[c for c in merge_cols if c in known_df.columns]].copy()
+        # Prepare known modifications for merge
+        keep_cols = [merge_position_col, 'modification_short_name',
+                     'modification_full_name', 'rt_signature_type']
+        known_subset = known_df[[c for c in keep_cols if c in known_df.columns]].copy()
+
+        # Rename the position column to 'position' for merging
+        if merge_position_col != 'position':
+            known_subset = known_subset.rename(columns={merge_position_col: 'position'})
 
         # Deduplicate: if multiple mods at same position, concatenate names
         if known_subset.duplicated(subset='position').any():
@@ -661,6 +1027,19 @@ class MODOMICSAnnotator:
             # Try matching by isotype only (some databases lack anticodon)
             mask_iso = mods_df['tRNA_isotype'].str.lower() == isotype.lower()
             matched = mods_df[mask_iso].copy()
+
+        # Also include 'all' isotype entries (universal modifications from CSV)
+        if 'all' in mods_df['tRNA_isotype'].values:
+            all_mask = mods_df['tRNA_isotype'] == 'all'
+            all_mods = mods_df[all_mask].copy()
+            matched = pd.concat([matched, all_mods], ignore_index=True)
+
+        # Deduplicate: MODOMICS may list the same position+mod from multiple
+        # tRNA sequence entries. Keep unique (position, modification) pairs.
+        dedup_cols = ['position', 'modification_short_name']
+        available = [c for c in dedup_cols if c in matched.columns]
+        if available and not matched.empty:
+            matched = matched.drop_duplicates(subset=available)
 
         return matched.reset_index(drop=True)
 

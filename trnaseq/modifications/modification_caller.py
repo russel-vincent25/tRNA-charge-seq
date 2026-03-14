@@ -8,7 +8,7 @@ Key modifications detected:
 - m1A (1-methyladenosine): Strong RT stops, A->any mismatches at positions 58, 14
 - m3C (3-methylcytosine): C->T mismatches at positions 32
 - Ψ (pseudouridine): U->C signature at multiple positions
-- m7G (7-methylguanosine): G->A signature at position 46
+- m7G (7-methylguanosine): G->C/A signature at position 46
 - m5C (5-methylcytosine): Subtle C->T signature at positions 48, 49
 - i6A (N6-isopentenyladenosine): A->G at position 37
 
@@ -59,9 +59,9 @@ MODIFICATION_PROFILES = {
         typical_positions=[58, 14, 9],
         signature_type='combined',
         mismatch_pattern='A->any',
-        min_rate=0.12,
-        rt_stop_required=True,
-        min_rt_stop_pct=20.0,
+        min_rate=0.10,
+        rt_stop_required=False,  # RT stop boosts confidence but isn't required
+        min_rt_stop_pct=15.0,
         confidence_weight=1.5  # High confidence when both mismatch + RT stop
     ),
 
@@ -92,7 +92,7 @@ MODIFICATION_PROFILES = {
         full_name='7-methylguanosine',
         typical_positions=[46],
         signature_type='mismatch',
-        mismatch_pattern='G->A',
+        mismatch_pattern='G->any',  # TGIRT/Maxima produce G->C; some enzymes G->A
         min_rate=0.10,
         rt_stop_required=False,
         confidence_weight=1.1
@@ -140,6 +140,164 @@ MODIFICATION_PROFILES = {
         min_rate=0.10,
         rt_stop_required=False,
         confidence_weight=1.0
+    ),
+
+    's4U': ModificationProfile(
+        name='s4U',
+        full_name='4-thiouridine',
+        typical_positions=[8, 9, 4],
+        signature_type='mismatch',
+        mismatch_pattern='U->C',
+        min_rate=0.08,
+        rt_stop_required=False,
+        confidence_weight=1.0
+    ),
+
+    'm1G': ModificationProfile(
+        name='m1G',
+        full_name='1-methylguanosine',
+        typical_positions=[37, 9],
+        signature_type='combined',
+        mismatch_pattern='G->any',
+        min_rate=0.08,
+        rt_stop_required=False,
+        min_rt_stop_pct=15.0,
+        confidence_weight=1.1
+    ),
+
+    'cmo5U': ModificationProfile(
+        name='cmo5U',
+        full_name='uridine 5-oxyacetic acid',
+        typical_positions=[34],
+        signature_type='mismatch',
+        mismatch_pattern='U->C',
+        min_rate=0.08,
+        rt_stop_required=False,
+        confidence_weight=0.9
+    ),
+
+    'mnm5s2U': ModificationProfile(
+        name='mnm5s2U',
+        full_name='5-methylaminomethyl-2-thiouridine',
+        typical_positions=[34],
+        signature_type='combined',
+        mismatch_pattern='U->C',
+        min_rate=0.08,
+        rt_stop_required=False,
+        confidence_weight=0.9
+    ),
+
+    't6A': ModificationProfile(
+        name='t6A',
+        full_name='N6-threonylcarbamoyladenosine',
+        typical_positions=[37],
+        signature_type='mismatch',
+        mismatch_pattern='A->T',
+        min_rate=0.08,
+        rt_stop_required=False,
+        confidence_weight=1.0
+    ),
+
+    'ms2i6A': ModificationProfile(
+        name='ms2i6A',
+        full_name='2-methylthio-N6-isopentenyladenosine',
+        typical_positions=[37],
+        signature_type='combined',
+        mismatch_pattern='A->G',
+        min_rate=0.08,
+        rt_stop_required=False,
+        min_rt_stop_pct=10.0,
+        confidence_weight=1.1
+    ),
+
+    'I': ModificationProfile(
+        name='I',
+        full_name='inosine',
+        typical_positions=[34],
+        signature_type='mismatch',
+        mismatch_pattern='A->G',
+        min_rate=0.10,
+        rt_stop_required=False,
+        confidence_weight=1.0
+    ),
+
+    # --- Eukaryotic-enriched modifications ---
+
+    'ac4C': ModificationProfile(
+        name='ac4C',
+        full_name='N4-acetylcytidine',
+        typical_positions=[12, 34],
+        signature_type='mismatch',
+        mismatch_pattern='C->T',
+        min_rate=0.05,
+        rt_stop_required=False,
+        confidence_weight=0.9
+    ),
+
+    'Gm': ModificationProfile(
+        name='Gm',
+        full_name="2'-O-methylguanosine",
+        typical_positions=[18, 34],
+        signature_type='mismatch',
+        mismatch_pattern='G->any',
+        min_rate=0.05,
+        rt_stop_required=False,
+        confidence_weight=0.8
+    ),
+
+    'Cm': ModificationProfile(
+        name='Cm',
+        full_name="2'-O-methylcytidine",
+        typical_positions=[32, 34],
+        signature_type='mismatch',
+        mismatch_pattern='C->any',
+        min_rate=0.05,
+        rt_stop_required=False,
+        confidence_weight=0.8
+    ),
+
+    'Um': ModificationProfile(
+        name='Um',
+        full_name="2'-O-methyluridine",
+        typical_positions=[32, 44],
+        signature_type='mismatch',
+        mismatch_pattern='U->any',
+        min_rate=0.05,
+        rt_stop_required=False,
+        confidence_weight=0.8
+    ),
+
+    'Am': ModificationProfile(
+        name='Am',
+        full_name="2'-O-methyladenosine",
+        typical_positions=[44],
+        signature_type='mismatch',
+        mismatch_pattern='A->any',
+        min_rate=0.05,
+        rt_stop_required=False,
+        confidence_weight=0.8
+    ),
+
+    'Q': ModificationProfile(
+        name='Q',
+        full_name='queuosine',
+        typical_positions=[34],
+        signature_type='mismatch',
+        mismatch_pattern='G->any',
+        min_rate=0.08,
+        rt_stop_required=False,
+        confidence_weight=1.0
+    ),
+
+    'm6A': ModificationProfile(
+        name='m6A',
+        full_name='N6-methyladenosine',
+        typical_positions=[37, 58],
+        signature_type='mismatch',
+        mismatch_pattern='A->any',
+        min_rate=0.05,
+        rt_stop_required=False,
+        confidence_weight=0.9
     ),
 }
 
@@ -301,8 +459,10 @@ class ModificationCaller:
 
         expected_ref, expected_obs = parts
 
-        # Check reference nucleotide matches
-        if expected_ref != ref_nt:
+        # Check reference nucleotide matches (handle U/T equivalence)
+        if expected_ref != ref_nt and not (
+            {expected_ref, ref_nt} <= {'U', 'T'}
+        ):
             return False, 0.0
 
         # Calculate total mismatches
@@ -322,8 +482,11 @@ class ModificationCaller:
             fraction = total_mismatches / total_coverage
             return True, fraction
         else:
-            # Specific nucleotide required
+            # Specific nucleotide required (handle U/T equivalence)
             obs_count = pscm_row.get(expected_obs, 0)
+            if obs_count == 0 and expected_obs in ('U', 'T'):
+                alt = 'T' if expected_obs == 'U' else 'U'
+                obs_count = pscm_row.get(alt, 0)
             if obs_count == 0:
                 return False, 0.0
             fraction = obs_count / total_coverage
@@ -378,6 +541,10 @@ class ModificationCaller:
             else:
                 # Penalize if RT stop required but not present
                 confidence *= 0.3
+        elif profile.signature_type == 'combined' and rt_stop_pct >= profile.min_rt_stop_pct:
+            # Bonus for combined-type profiles when RT stop is present
+            rt_stop_score = min(1.0, rt_stop_pct / 50.0)
+            confidence += rt_stop_score * 0.2
 
         # Pattern specificity
         if pattern_fraction > 0:
@@ -740,6 +907,7 @@ class ModificationCaller:
         reference_seq: Optional[str] = None,
         discover_novel: bool = False,
         min_coverage: int = 50,
+        known_mods_df: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
         Run both known profile matching and optional novel discovery.
@@ -748,6 +916,11 @@ class ModificationCaller:
         profiles and :meth:`call_novel_positions` for novel candidates,
         then returns the combined results.
 
+        When *known_mods_df* is provided (a DataFrame of MODOMICS-derived
+        modifications with a ``linear_position`` column), novel candidates
+        whose position matches a known modification are relabelled with the
+        known modification name and their confidence is boosted.
+
         Args:
             trna_name: Name of the tRNA.
             signatures_df: RT signature DataFrame.
@@ -755,10 +928,12 @@ class ModificationCaller:
             reference_seq: Reference sequence string.
             discover_novel: If True, also run novel modification discovery.
             min_coverage: Minimum coverage for novel discovery.
+            known_mods_df: DataFrame with ``linear_position`` and
+                ``modification_short_name`` columns from MODOMICS.
 
         Returns:
-            Combined DataFrame with ``source`` column ('known' or
-            'novel_candidate').
+            Combined DataFrame with ``source`` column ('known',
+            'known_modomics', or 'novel_candidate').
         """
         known_df = self.call_modifications_for_trna(
             trna_name, signatures_df, pscm_df, reference_seq
@@ -779,6 +954,42 @@ class ModificationCaller:
                 combined = known_df
         else:
             combined = known_df
+
+        # --- MODOMICS-guided relabelling of novel candidates ---
+        if (not combined.empty
+                and known_mods_df is not None
+                and not known_mods_df.empty
+                and 'linear_position' in known_mods_df.columns):
+            # Build a lookup: linear_position → (short_name, full_name)
+            pos_to_mod: Dict[int, Tuple[str, str]] = {}
+            for _, row in known_mods_df.iterrows():
+                lp = int(row['linear_position'])
+                short = row.get('modification_short_name', 'known')
+                full = row.get('modification_full_name', short)
+                # If multiple mods at same position, concatenate
+                if lp in pos_to_mod:
+                    prev_short, prev_full = pos_to_mod[lp]
+                    if short not in prev_short:
+                        pos_to_mod[lp] = (
+                            f"{prev_short}; {short}",
+                            f"{prev_full}; {full}",
+                        )
+                else:
+                    pos_to_mod[lp] = (short, full)
+
+            novel_mask = combined['source'] == 'novel_candidate'
+            for idx in combined.index[novel_mask]:
+                pos = int(combined.at[idx, 'position'])
+                if pos in pos_to_mod:
+                    short_name, full_name = pos_to_mod[pos]
+                    combined.at[idx, 'modification'] = short_name
+                    combined.at[idx, 'full_name'] = full_name
+                    combined.at[idx, 'source'] = 'known_modomics'
+                    # Boost confidence for MODOMICS-confirmed positions
+                    combined.at[idx, 'confidence'] = min(
+                        1.0, combined.at[idx, 'confidence'] * 1.5
+                    )
+                    combined.at[idx, 'in_typical_position'] = True
 
         if not combined.empty:
             # Apply FDR correction across all tested positions

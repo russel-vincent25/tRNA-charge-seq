@@ -1559,14 +1559,14 @@ class PreprocessingPipeline:
             self.log(f"  Novel discovery: {discover_novel}")
 
             # ==== Phase 1: PSCM extraction ====
-            self.log("  Phase 1/6: Extracting PSCMs...")
+            self.log("  Phase 1/7: Extracting PSCMs...")
             extractor = PositionalExtractor(ref_fasta)
             all_pscm = extractor.run_parallel(
                 json_dir, sample_names, n_jobs=self.n_jobs
             )
 
             # ==== Phase 2: Background estimation ====
-            self.log("  Phase 2/6: Estimating background error rate...")
+            self.log("  Phase 2/7: Estimating background error rate...")
             pooled = _pool_pscm_dicts(all_pscm)
             bg_rate, bg_source = estimate_background_error_rate(
                 pooled, extractor.ref_dict,
@@ -1581,7 +1581,7 @@ class PreprocessingPipeline:
             self.log(f"  Loaded {len(mods_df)} known modification entries")
 
             # ==== Phase 3: Per-sample calling ====
-            self.log("  Phase 3/6: Calling modifications per sample...")
+            self.log("  Phase 3/7: Calling modifications per sample...")
             analyzer = RTSignatureAnalyzer(
                 min_coverage=min_coverage, verbose=False
             )
@@ -1607,6 +1607,11 @@ class PreprocessingPipeline:
                 _save_df(rt_profile, sample_dir / 'rt_profile')
                 _save_df(mm_profile, sample_dir / 'mismatch_profile')
 
+                # Detect anticodon positions (fallback for CSV-only data)
+                ac_positions = extractor._autodetect_anticodon_positions(
+                    list(pscm_dfs.keys())
+                )
+
                 # Call modifications for each tRNA in this sample
                 sample_calls = []
                 for trna_name, pscm_df in pscm_dfs.items():
@@ -1614,7 +1619,19 @@ class PreprocessingPipeline:
                     analysis = analyzer.analyze_trna_with_actual_stops(
                         trna_name, pscm_df, rt_stop_counts=rt_counts,
                     )
-                    ref_seq = analyzer.reference_sequences.get(trna_name, {}).get('seq')
+                    ref_info = analyzer.reference_sequences.get(trna_name, {})
+                    ref_seq = ref_info.get('seq')
+
+                    # Get known mods: alignment-based (preferred) or heuristic fallback
+                    known_mods_for_trna = None
+                    if ref_seq:
+                        ac_pos = ac_positions.get(trna_name)
+                        ac_start = ac_pos[0] if ac_pos is not None else None
+                        known_mods_for_trna = annotator.get_known_mods_linear(
+                            trna_name, ref_seq,
+                            anticodon_linear_start=ac_start,
+                        )
+
                     calls_df = caller.call_all(
                         trna_name,
                         analysis['signatures'],
@@ -1622,6 +1639,7 @@ class PreprocessingPipeline:
                         ref_seq,
                         discover_novel=discover_novel,
                         min_coverage=min_coverage,
+                        known_mods_df=known_mods_for_trna,
                     )
                     if not calls_df.empty:
                         sample_calls.append(calls_df)
@@ -1652,7 +1670,7 @@ class PreprocessingPipeline:
                 self.log(f"  Modification calling complete ({n_mod_samples} samples): 0 calls")
 
             # ==== Phase 4: Replicate aggregation ====
-            self.log("  Phase 4/6: Aggregating across replicates...")
+            self.log("  Phase 4/7: Aggregating across replicates...")
             replicate_groups = {}
             if 'sample_name' in self.sample_df.columns:
                 for _, row in self.sample_df.iterrows():
@@ -1686,7 +1704,7 @@ class PreprocessingPipeline:
                 self.log("  No replicate groups found — skipping aggregation.")
 
             # ==== Phase 5: Summary CSV ====
-            self.log("  Phase 5/6: Generating modification summary...")
+            self.log("  Phase 5/7: Generating modification summary...")
             summary_rows = []
             for snu in sample_names:
                 sc = per_sample_calls.get(snu, pd.DataFrame())
@@ -1717,8 +1735,59 @@ class PreprocessingPipeline:
             summary_df.to_csv(output_dir / 'modification_summary.csv', index=False)
             self.log(f"  Saved modification_summary.csv ({len(summary_df)} rows)")
 
-            # ==== Phase 6: QC report ====
-            self.log("  Phase 6/6: Generating modification QC report...")
+            # ==== Phase 6: Crosstalk analysis (SLAC) ====
+            self.log("  Phase 6/7: Analyzing modification crosstalks (SLAC)...")
+            crosstalk_df = pd.DataFrame()
+            try:
+                from trnaseq.modifications.crosstalk import CrosstalkAnalyzer
+
+                # Build mod_positions dict: {trna_name: [linear_pos, ...]}
+                mod_pos_dict = {}
+                for trna_name, ref_info in analyzer.reference_sequences.items():
+                    ref_seq = ref_info.get('seq')
+                    if ref_seq:
+                        known = annotator.get_known_mods_linear(trna_name, ref_seq)
+                        if not known.empty and 'linear_position' in known.columns:
+                            positions = sorted(known['linear_position'].astype(int).tolist())
+                            if len(positions) >= 2:
+                                mod_pos_dict[trna_name] = positions
+
+                if mod_pos_dict:
+                    ct_analyzer = CrosstalkAnalyzer(
+                        min_coverage=min_coverage,
+                        mismatch_threshold=0.05,
+                    )
+                    # Collect SWalign JSON paths per sample
+                    swalign_dir = self.project_dir / 'data' / 'SWalign'
+                    json_paths = {}
+                    for snu in sample_names:
+                        jp = swalign_dir / f'{snu}_SWalign.json.bz2'
+                        if jp.exists():
+                            json_paths[snu] = jp
+
+                    if json_paths:
+                        crosstalk_df = ct_analyzer.analyze_multiple_samples(
+                            json_paths, mod_pos_dict
+                        )
+                        if not crosstalk_df.empty:
+                            _save_df(crosstalk_df, output_dir / 'crosstalk_analysis')
+                            n_sig = crosstalk_df['fdr_significant'].sum() if 'fdr_significant' in crosstalk_df.columns else 0
+                            n_pairs = crosstalk_df[['trna_name', 'pos_a', 'pos_b']].drop_duplicates().shape[0]
+                            self.log(f"  Crosstalk: {n_pairs} position pairs tested, "
+                                     f"{n_sig} significant (FDR < 0.05)")
+                        else:
+                            self.log("  No crosstalks detected (insufficient coverage or signal).")
+                    else:
+                        self.log("  No SWalign JSON files found — skipping crosstalk.")
+                else:
+                    self.log("  No tRNAs with ≥2 known modification positions — skipping crosstalk.")
+            except ImportError:
+                self.log("  Crosstalk module not available — skipping.")
+            except Exception as ct_err:
+                self.log(f"  WARNING: Crosstalk analysis failed: {ct_err}", level="WARN")
+
+            # ==== Phase 7: QC report ====
+            self.log("  Phase 7/7: Generating modification QC report...")
             if MOD_REPORT_AVAILABLE:
                 try:
                     source_prefixes = self.config.get('tRNA_source_prefixes',
