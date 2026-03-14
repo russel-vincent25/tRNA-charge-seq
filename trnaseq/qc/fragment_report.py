@@ -7,12 +7,13 @@ summarizing tRNA fragment analysis across samples.
 
 Panels:
     1. Fragment type stacked bar
-    2. Per-tRNA integrity heatmap (top 50 tRNAs)
-    3. RT drop-off positional profile (top 5 tRNAs)
-    4. Fragment length distribution
-    5. Behrens coverage plot (if coverage data provided)
-    6. Needle coverage plot (if coverage data provided)
-    7. Synthetic tRNA integrity (if source_prefixes provided)
+    2. Fragment composition by tRNA — stacked bar of fragment type fractions
+       per tRNA for the top 30 most-covered tRNAs, with a dropdown to switch
+       between conditions (each condition averaged across its replicates)
+    3. Per-AA integrity box plots with condition dropdown
+    4. Behrens coverage plot (if coverage data provided)
+    5. Needle coverage plot (if coverage data provided)
+    6. Synthetic tRNA integrity (if source_prefixes provided)
 """
 
 import numpy as np
@@ -34,11 +35,11 @@ def _isoacceptor_sort_key(trna_name):
     return (trna_name, '')
 
 
-# Standard amino acid order for consistent coloring across plots
+# Standard amino acid order — reverse alphabetical (matches original TRNA_plot)
 _AA_ORDER = [
-    'Ala', 'Arg', 'Asn', 'Asp', 'Cys', 'Gln', 'Glu', 'Gly',
-    'His', 'Ile', 'Leu', 'Lys', 'Met', 'Phe', 'Pro', 'Ser',
-    'Thr', 'Trp', 'Tyr', 'Val',
+    'Val', 'Tyr', 'Trp', 'Thr', 'Ser', 'Pro', 'Phe', 'Met',
+    'Lys', 'Leu', 'Ile', 'His', 'Gly', 'Glu', 'Gln', 'Cys',
+    'Asp', 'Asn', 'Arg', 'Ala',
 ]
 
 
@@ -101,29 +102,25 @@ class FragmentReportGenerator:
         if p1:
             panels.append(p1)
 
-        p2 = self._panel_integrity_heatmap()
+        p2 = self._panel_fragment_composition_by_trna()
         if p2:
             panels.append(p2)
 
-        p3 = self._panel_rt_dropoff_profile()
+        p3 = self._panel_integrity_violin()
         if p3:
             panels.append(p3)
 
-        p4 = self._panel_fragment_length_distribution()
+        p4 = self._panel_behrens_coverage()
         if p4:
             panels.append(p4)
 
-        p5 = self._panel_behrens_coverage()
+        p5 = self._panel_needle_coverage()
         if p5:
             panels.append(p5)
 
-        p6 = self._panel_needle_coverage()
+        p6 = self._panel_synthetic_integrity()
         if p6:
             panels.append(p6)
-
-        p7 = self._panel_synthetic_integrity()
-        if p7:
-            panels.append(p7)
 
         body = '\n'.join(panels)
         plotlyjs = plotly.offline.get_plotlyjs()
@@ -193,205 +190,334 @@ h2 {{ color: #2d3436; margin-top: 40px; }}
         div = self._fig_to_div(fig)
         return f'<h2>Fragment Types</h2><div class="card">{div}</div>'
 
-    # ---- panel 2: integrity heatmap ----
+    # ---- panel 2: fragment composition by tRNA ----
 
-    def _panel_integrity_heatmap(self):
-        """Heatmap: top tRNAs x samples, color = integrity_score."""
+    TOP_TRNAS_COMPOSITION = 30
+
+    def _panel_fragment_composition_by_trna(self):
+        """Stacked bar of fragment type fractions per tRNA, with condition dropdown.
+
+        Uses frac_* columns from frag_counts. Selects the top 30 tRNAs by
+        total_reads across all samples, sorted by isoacceptor. For each
+        condition (derived by stripping the trailing -R\\d+ suffix), the mean
+        fraction per fragment type per tRNA is computed across replicates. A
+        dropdown lets the user switch between conditions; the first condition is
+        visible by default.
+        """
+        import re
+
+        df = self.frag_counts
+        if df.empty:
+            return ''
+
+        trna_col = 'tRNA_annotation' if 'tRNA_annotation' in df.columns else 'tRNA_name'
+        frac_cols = ['frac_full_length', 'frac_rt_dropoff', 'frac_5p_tRF', 'frac_degraded']
+        required = {trna_col, 'sample_name_unique', 'total_reads'} | set(frac_cols)
+        if not required.issubset(df.columns):
+            return ''
+
+        df = df.copy()
+        df['_condition'] = df['sample_name_unique'].apply(
+            lambda s: re.sub(r'-R\d+$', '', str(s))
+        )
+
+        # Select top 30 tRNAs by total_reads summed across all samples
+        total_by_trna = df.groupby(trna_col)['total_reads'].sum()
+        top_trnas = total_by_trna.nlargest(self.TOP_TRNAS_COMPOSITION).index.tolist()
+        # Sort by isoacceptor (AA then anticodon)
+        top_trnas = sorted(top_trnas, key=_isoacceptor_sort_key)
+
+        sub = df[df[trna_col].isin(top_trnas)]
+        if sub.empty:
+            return ''
+
+        # Short display names: strip prefix, keep AA-anticodon-copy (everything after first '-')
+        def _short_name(name):
+            idx = name.find('-')
+            return name[idx + 1:] if idx != -1 else name
+
+        x_labels = [_short_name(t) for t in top_trnas]
+
+        # Fragment type config: internal key → (display label, color)
+        type_colors = {
+            'frac_full_length': ('Full-length', '#00b894'),
+            'frac_rt_dropoff':  ('RT drop-off',  '#0984e3'),
+            'frac_5p_tRF':      ("5' tRF",        '#fdcb6e'),
+            'frac_degraded':    ('Degraded',       '#d63031'),
+        }
+
+        conditions = sorted(sub['_condition'].unique())
+        if not conditions:
+            return ''
+
+        fig = go.Figure()
+        traces_per_condition = []
+
+        for cond_idx, cond in enumerate(conditions):
+            visible = (cond_idx == 0)
+            cond_df = sub[sub['_condition'] == cond]
+
+            # Mean fraction per fragment type per tRNA across replicates
+            mean_fracs = (
+                cond_df.groupby(trna_col)[frac_cols]
+                .mean()
+            )
+
+            for ftype, (label, color) in type_colors.items():
+                y_vals = [
+                    float(mean_fracs.loc[t, ftype]) if t in mean_fracs.index else float('nan')
+                    for t in top_trnas
+                ]
+                fig.add_trace(go.Bar(
+                    x=x_labels,
+                    y=y_vals,
+                    name=label,
+                    marker_color=color,
+                    visible=visible,
+                    showlegend=(cond_idx == 0),
+                    hovertemplate=(
+                        f'{label}<br>tRNA: %{{x}}<br>'
+                        'Fraction: %{y:.3f}<extra></extra>'
+                    ),
+                ))
+            traces_per_condition.append(4)
+
+        # Build dropdown buttons
+        total = sum(traces_per_condition)
+        buttons = []
+        offset = 0
+        for cond_idx, cond in enumerate(conditions):
+            n_t = traces_per_condition[cond_idx]
+            vis = [False] * total
+            for j in range(n_t):
+                vis[offset + j] = True
+            buttons.append(dict(
+                label=cond,
+                method='update',
+                args=[
+                    {'visible': vis},
+                    {'title': f'Fragment Composition by tRNA \u2014 {cond}'},
+                ],
+            ))
+            offset += n_t
+
+        first_cond = conditions[0]
+        fig.update_layout(
+            barmode='stack',
+            title=f'Fragment Composition by tRNA \u2014 {first_cond}',
+            xaxis_title='tRNA',
+            yaxis_title='Fraction',
+            yaxis_range=[0, 1],
+            height=550,
+            updatemenus=[dict(
+                type='dropdown',
+                direction='down',
+                x=1.0, xanchor='right',
+                y=1.15, yanchor='top',
+                buttons=buttons,
+                active=0,
+            )],
+        )
+        div = self._fig_to_div(fig)
+        return (
+            '<h2>Fragment Composition by tRNA</h2>'
+            f'<div class="card">{div}</div>'
+        )
+
+    # ---- panel 3: per-AA integrity violin ----
+
+    def _panel_integrity_violin(self):
+        """Box plots of integrity_score by amino acid, with a dropdown to select condition."""
+        import re
+
         df = self.frag_counts
         if df.empty or 'integrity_score' not in df.columns:
             return ''
 
-        trna_col = 'tRNA_annotation' if 'tRNA_annotation' in df.columns else 'tRNA_name'
-        if trna_col not in df.columns:
+        if 'amino_acid' not in df.columns or 'sample_name_unique' not in df.columns:
             return ''
 
-        # Select top tRNAs by total reads
-        count_col = 'total_reads' if 'total_reads' in df.columns else 'count'
-        if count_col not in df.columns:
-            # Use integrity_score count as proxy
-            top_trnas = df[trna_col].value_counts().head(self.MAX_TRNAS_HEATMAP).index.tolist()
-        else:
-            trna_totals = df.groupby(trna_col)[count_col].sum().nlargest(self.MAX_TRNAS_HEATMAP)
-            top_trnas = trna_totals.index.tolist()
+        aa_colors = _aa_palette()
 
-        # Sort by isoacceptor
-        top_trnas = sorted(top_trnas, key=_isoacceptor_sort_key)
+        # Extract condition by stripping trailing -R\d+ replicate suffix
+        def _condition(name):
+            return re.sub(r'-R\d+$', '', str(name))
 
-        sub = df[df[trna_col].isin(top_trnas)]
-        pivot = sub.pivot_table(
-            index=trna_col, columns='sample_name_unique',
-            values='integrity_score', aggfunc='mean')
-
-        # Reorder rows
-        pivot = pivot.reindex([t for t in top_trnas if t in pivot.index])
-
-        if pivot.empty:
+        df = df.copy()
+        df['_condition'] = df['sample_name_unique'].apply(_condition)
+        conditions = sorted(df['_condition'].unique())
+        if not conditions:
             return ''
 
-        fig = go.Figure(go.Heatmap(
-            z=pivot.values,
-            x=pivot.columns.tolist(),
-            y=pivot.index.tolist(),
-            colorscale='RdYlGn',
-            zmin=0, zmax=1,
-            colorbar=dict(title='Integrity'),
-            hovertemplate='tRNA: %{y}<br>Sample: %{x}<br>Integrity: %{z:.2f}<extra></extra>',
-        ))
-        fig.update_layout(
-            title=f'tRNA Integrity (top {len(pivot)} tRNAs)',
-            height=max(400, len(pivot) * 18),
-        )
-        div = self._fig_to_div(fig)
-        return f'<h2>tRNA Integrity Heatmap</h2><div class="card">{div}</div>'
-
-    # ---- panel 3: RT drop-off profile ----
-
-    def _panel_rt_dropoff_profile(self):
-        """Line plot: RT drop-off positional profile for top tRNAs."""
-        df = self.rt_dropoff
-        if df.empty:
+        # Collect all amino acids across the whole dataset (for consistent x-axis)
+        all_aas = sorted(df['amino_acid'].dropna().unique())
+        if not all_aas:
             return ''
-
-        pos_col = 'position' if 'position' in df.columns else None
-        frac_col = 'rt_stop_fraction' if 'rt_stop_fraction' in df.columns else None
-        trna_col = 'tRNA_annotation' if 'tRNA_annotation' in df.columns else 'tRNA_name'
-
-        if pos_col is None or frac_col is None or trna_col not in df.columns:
-            return ''
-
-        # Aggregate across samples, pick top 5 by total signal
-        agg = df.groupby([trna_col, pos_col])[frac_col].mean().reset_index()
-        trna_signal = agg.groupby(trna_col)[frac_col].sum().nlargest(5)
-        top_trnas = trna_signal.index.tolist()
-
-        if not top_trnas:
-            return ''
-
-        palette = _discrete_palette(len(top_trnas))
-        fig = go.Figure()
-        for i, trna in enumerate(top_trnas):
-            sub = agg[agg[trna_col] == trna].sort_values(pos_col)
-            # Shorten name for legend
-            short = '-'.join(trna.split('-')[1:]) if '-' in trna else trna
-            fig.add_trace(go.Scatter(
-                x=sub[pos_col], y=sub[frac_col],
-                mode='lines', name=short,
-                line=dict(color=palette[i]),
-            ))
-
-        fig.update_layout(
-            title='RT Drop-off Positional Profile (top 5 tRNAs)',
-            xaxis_title='Position (nt)',
-            yaxis_title='RT stop fraction',
-            height=450,
-        )
-        div = self._fig_to_div(fig)
-        return f'<h2>RT Drop-off Profile</h2><div class="card">{div}</div>'
-
-    # ---- panel 4: fragment length distribution ----
-
-    def _panel_fragment_length_distribution(self):
-        """Overlaid line traces by fragment type (aggregated)."""
-        df = self.frag_lengths
-        if df.empty:
-            return ''
-
-        len_col = 'fragment_length' if 'fragment_length' in df.columns else 'read_length'
-        count_col = 'read_count' if 'read_count' in df.columns else 'count'
-        type_col = 'fragment_type' if 'fragment_type' in df.columns else None
-
-        if len_col not in df.columns or count_col not in df.columns:
-            return ''
-
-        type_colors = {
-            'full_length': '#00b894',
-            'rt_dropoff': '#0984e3',
-            '5p_tRF': '#fdcb6e',
-            'degraded': '#d63031',
-        }
 
         fig = go.Figure()
+        traces_per_condition = []
 
-        if type_col and type_col in df.columns:
-            for ftype in df[type_col].unique():
-                sub = df[df[type_col] == ftype].groupby(len_col)[count_col].sum().reset_index()
-                sub = sub.sort_values(len_col)
-                fig.add_trace(go.Scatter(
-                    x=sub[len_col], y=sub[count_col],
-                    mode='lines', name=ftype,
-                    line=dict(color=type_colors.get(ftype, '#b2bec3')),
+        for c_idx, cond in enumerate(conditions):
+            visible = (c_idx == 0)
+            cond_df = df[df['_condition'] == cond]
+            n_traces = 0
+            for aa in all_aas:
+                sub = cond_df[cond_df['amino_acid'] == aa]['integrity_score'].dropna()
+                if sub.empty:
+                    continue
+                fig.add_trace(go.Box(
+                    y=sub,
+                    name=aa,
+                    marker_color=aa_colors.get(aa, '#b2bec3'),
+                    boxpoints='outliers',
+                    visible=visible,
+                    showlegend=False,
+                    hovertemplate=f'{aa} | {cond}<br>Integrity: %{{y:.3f}}<extra></extra>',
                 ))
-        else:
-            agg = df.groupby(len_col)[count_col].sum().reset_index().sort_values(len_col)
-            fig.add_trace(go.Scatter(
-                x=agg[len_col], y=agg[count_col],
-                mode='lines', name='All fragments',
-            ))
+                n_traces += 1
+            traces_per_condition.append(n_traces)
 
+        if not any(n > 0 for n in traces_per_condition):
+            return ''
+
+        # Build dropdown buttons
+        total = sum(traces_per_condition)
+        final_buttons = []
+        offset = 0
+        for c_idx, cond in enumerate(conditions):
+            n_t = traces_per_condition[c_idx]
+            vis = [False] * total
+            for j in range(n_t):
+                vis[offset + j] = True
+            final_buttons.append(dict(
+                label=cond,
+                method='update',
+                args=[{'visible': vis}, {'title': f'tRNA Integrity by Amino Acid — {cond}'}],
+            ))
+            offset += n_t
+
+        first_cond = conditions[0]
         fig.update_layout(
-            title='Fragment Length Distribution',
-            xaxis_title='Fragment length (nt)',
-            yaxis_title='Read count',
+            title=f'tRNA Integrity by Amino Acid — {first_cond}',
+            yaxis_title='Integrity score',
+            yaxis_range=[-0.05, 1.05],
             height=450,
+            showlegend=False,
+            updatemenus=[dict(
+                type='dropdown',
+                direction='down',
+                x=1.0, xanchor='right',
+                y=1.15, yanchor='top',
+                buttons=final_buttons,
+                active=0,
+            )],
         )
         div = self._fig_to_div(fig)
-        return f'<h2>Fragment Length Distribution</h2><div class="card">{div}</div>'
+        return f'<h2>Integrity by Amino Acid</h2><div class="card">{div}</div>'
 
     # ---- coverage normalization helper ----
 
-    def _normalize_coverage_matrix(self, sample_cov, n_bins=100):
-        """Normalize variable-length tRNA coverage to a common positional axis.
+    def _build_coverage_matrices(self, sample_cov, aa_norm=False):
+        """Build coverage matrices matching the original TRNA_plot algorithm.
 
-        For each amino acid, maps positions [0, max_tRNA_len) to [0, n_bins)
-        using linear interpolation, then sums across amino acids.
+        1. Map variable-length tRNAs to the global max length using
+           nearest-percentile indexing.
+        2. Place read-start counts at mapped 5' positions.
+        3. Cumulate 5'→3' (left-to-right) to get coverage.
+        4. Column-wise cumulate (stack) for Behrens-style plotting.
 
         Parameters
         ----------
         sample_cov : DataFrame
             Subset of coverage_df for a single sample.
             Columns: amino_acid, position, count, max_tRNA_len.
-        n_bins : int
-            Number of bins in the normalized axis.
+        aa_norm : bool
+            If True, weight each amino acid equally at the 3' end.
 
         Returns
         -------
-        aa_matrix : dict
-            {amino_acid: ndarray(n_bins,)} — normalized coverage per AA.
-        total : ndarray(n_bins,)
-            Sum across all amino acids.
+        cov_count : ndarray (n_aa, max_len)
+            Per-AA coverage (cumulated 5'→3').
+        cov_count_sum : ndarray (n_aa+1, max_len)
+            Column-wise cumulated coverage (row 0 = zeros baseline).
+        aa_ordered : list of str
+            Amino acid names in plot order (reverse alphabetical).
+        max_len : int
+            Length of the x-axis.
         """
-        aa_matrix = {}
-        total = np.zeros(n_bins)
+        if sample_cov.empty:
+            return None, None, [], 0
 
-        for aa, grp in sample_cov.groupby('amino_acid'):
-            max_len = int(grp['max_tRNA_len'].iloc[0])
-            if max_len < 2:
+        # Global max tRNA length across all AAs
+        global_max_len = int(sample_cov['max_tRNA_len'].max())
+        if global_max_len < 2:
+            return None, None, [], 0
+
+        # Build nearest-percentile length maps for each observed length
+        observed_lens = sample_cov['max_tRNA_len'].unique()
+        len_map = {}
+        for tlen in observed_lens:
+            tlen = int(tlen)
+            if tlen not in len_map:
+                len_map[tlen] = np.percentile(
+                    np.arange(global_max_len),
+                    np.linspace(0, 100, tlen),
+                    method='nearest',
+                ).astype(int)
+
+        # Order amino acids: use _AA_ORDER for known, then extras
+        all_aas = set(sample_cov['amino_acid'].unique())
+        aa_ordered = [aa for aa in _AA_ORDER if aa in all_aas]
+        for extra in sorted(all_aas - set(_AA_ORDER)):
+            aa_ordered.append(extra)
+        aa_index = {aa: i for i, aa in enumerate(aa_ordered)}
+
+        # Build count matrix: place read-start counts at mapped positions
+        n_aa = len(aa_ordered)
+        cov_count = np.zeros((n_aa, global_max_len))
+
+        for _, row in sample_cov.iterrows():
+            aa = row['amino_acid']
+            if aa not in aa_index:
                 continue
+            pos = int(row['position']) - 1  # align_5p_idx is 1-indexed
+            tlen = int(row['max_tRNA_len'])
+            if pos < 0 or pos >= tlen:
+                continue
+            mapped_pos = len_map[tlen][pos]
+            cov_count[aa_index[aa], mapped_pos] += row['count']
 
-            # Build raw coverage vector (cumulative 5'->3')
-            raw = np.zeros(max_len)
-            for _, row in grp.iterrows():
-                pos = int(row['position'])
-                if 0 <= pos < max_len:
-                    raw[pos] += row['count']
+        # Cumulate 5'→3' (left to right) to get coverage
+        for i in range(n_aa):
+            for j in range(1, global_max_len):
+                cov_count[i, j] += cov_count[i, j - 1]
 
-            # Cumulative sum 5'->3' gives coverage at each position
-            cum = np.cumsum(raw[::-1])[::-1]
+        # Optional AA normalization: each AA equally weighted at 3' end
+        if aa_norm:
+            for i in range(n_aa):
+                three_prime = cov_count[i, -1]
+                if three_prime > 0:
+                    cov_count[i, :] = cov_count[i, :] / three_prime / n_aa
 
-            # Interpolate to normalized axis
-            old_x = np.linspace(0, 1, max_len)
-            new_x = np.linspace(0, 1, n_bins)
-            interp = np.interp(new_x, old_x, cum)
+        # Column-wise cumulation for stacked plots
+        cov_count_sum = cov_count.copy()
+        for i in range(1, n_aa):
+            cov_count_sum[i] += cov_count_sum[i - 1]
+        # Prepend zeros baseline row
+        cov_count_sum = np.vstack((
+            np.zeros(global_max_len), cov_count_sum
+        ))
 
-            aa_matrix[aa] = interp
-            total += interp
-
-        return aa_matrix, total
+        return cov_count, cov_count_sum, aa_ordered, global_max_len
 
     # ---- panel 5: Behrens coverage plot ----
 
     def _panel_behrens_coverage(self):
-        """Stacked area chart of read coverage by amino acid (Behrens-style)."""
+        """Stacked step-area chart of read coverage by amino acid (Behrens-style).
+
+        Matches the original TRNA_plot.plot_coverage(plot_type='behrens'):
+        stacked filled step functions, each amino acid layered bottom-to-top.
+        """
         if self.coverage_df is None or self.coverage_df.empty:
             return ''
 
@@ -405,72 +531,126 @@ h2 {{ color: #2d3436; margin-top: 40px; }}
             return ''
 
         aa_colors = _aa_palette()
-        n_bins = 100
 
-        # Build traces for each sample (first sample visible, rest hidden)
         fig = go.Figure()
         buttons = []
 
-        for s_idx, sample in enumerate(samples):
+        # Pre-compute matrices for all samples
+        sample_data = []
+        for sample in samples:
             scov = self.coverage_df[
                 self.coverage_df['sample_name_unique'] == sample
             ]
-            aa_matrix, _ = self._normalize_coverage_matrix(scov, n_bins)
+            result = self._build_coverage_matrices(scov)
+            sample_data.append(result)
 
-            x_axis = np.linspace(0, 100, n_bins)
+        # Find consistent n_aas across samples for visibility toggling
+        # Each sample produces: top outline + n_aa filled layers = n_aa + 1 traces
+        traces_per_sample = []
+
+        for s_idx, (sample, (cov_count, cov_count_sum, aa_ordered, max_len)) in enumerate(
+            zip(samples, sample_data)
+        ):
+            if cov_count is None:
+                traces_per_sample.append(0)
+                continue
+
             visible = (s_idx == 0)
+            n_aa = len(aa_ordered)
+            x_vals = list(range(max_len))
 
-            # Sort AAs for consistent stacking
-            sorted_aas = [aa for aa in _AA_ORDER if aa in aa_matrix]
-            for extra_aa in sorted(set(aa_matrix) - set(_AA_ORDER)):
-                sorted_aas.append(extra_aa)
-
-            for aa in sorted_aas:
+            # Stacked step areas: draw each AA layer as fill between
+            # cov_count_sum[i-1] (baseline) and cov_count_sum[i] (top)
+            for i in range(n_aa):
+                aa = aa_ordered[i]
                 color = aa_colors.get(aa, '#b2bec3')
+                top = cov_count_sum[i + 1]
+                baseline = cov_count_sum[i]
+
+                # Baseline trace (invisible, used as fill anchor)
                 fig.add_trace(go.Scatter(
-                    x=x_axis,
-                    y=aa_matrix[aa],
+                    x=x_vals, y=baseline.tolist(),
+                    mode='lines',
+                    line=dict(width=0, color='rgba(0,0,0,0)'),
+                    showlegend=False,
+                    visible=visible,
+                    hoverinfo='skip',
+                    line_shape='hv',
+                ))
+                # Top trace with fill to previous
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=top.tolist(),
                     mode='lines',
                     name=aa,
-                    stackgroup=f'stack_{s_idx}',
                     line=dict(width=0.5, color=color),
+                    line_shape='hv',
+                    fill='tonexty',
                     fillcolor=color,
+                    opacity=0.7,
                     visible=visible,
                     showlegend=(s_idx == 0),
                     hovertemplate=f'{aa}<br>'
-                                 'Position: %{x:.0f}%<br>'
+                                 "Position: %{{x}}<br>"
                                  'Coverage: %{y:.0f}<extra></extra>',
                 ))
 
-            # Button for dropdown
-            n_aas = len(sorted_aas)
-            vis = [False] * (len(samples) * n_aas) if n_aas > 0 else []
-            start = s_idx * n_aas
-            for j in range(n_aas):
+            # Black outline on top
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=cov_count_sum[-1].tolist(),
+                mode='lines',
+                line=dict(width=1, color='black'),
+                line_shape='hv',
+                showlegend=False,
+                visible=visible,
+                hoverinfo='skip',
+            ))
+
+            n_traces = n_aa * 2 + 1  # baseline+top per AA, plus outline
+            traces_per_sample.append(n_traces)
+
+            # Dropdown button
+            total_traces = sum(traces_per_sample)
+            vis = [False] * total_traces
+            start = total_traces - n_traces
+            for j in range(n_traces):
                 vis[start + j] = True
-            buttons.append(dict(
+
+        # Rebuild visibility arrays now that all traces are added
+        total = sum(traces_per_sample)
+        final_buttons = []
+        offset = 0
+        for s_idx, sample in enumerate(samples):
+            n_t = traces_per_sample[s_idx]
+            if n_t == 0:
+                offset += n_t
+                continue
+            vis = [False] * total
+            for j in range(n_t):
+                vis[offset + j] = True
+            final_buttons.append(dict(
                 label=sample,
                 method='update',
                 args=[{'visible': vis}],
             ))
+            offset += n_t
 
-        if buttons:
+        if final_buttons:
             fig.update_layout(
                 updatemenus=[dict(
                     type='dropdown',
                     direction='down',
                     x=1.0, xanchor='right',
                     y=1.15, yanchor='top',
-                    buttons=buttons,
+                    buttons=final_buttons,
                     active=0,
                 )],
             )
 
         fig.update_layout(
             title='tRNA Coverage by Amino Acid (Behrens Plot)',
-            xaxis_title='Normalized position (% of tRNA length)',
-            yaxis_title='Cumulative read starts',
-            height=500,
+            xaxis_title="5' to 3' index (mapped to longest tRNA)",
+            yaxis_title='Read count',
+            height=550,
         )
         div = self._fig_to_div(fig)
         return f'<h2>Behrens Coverage Plot</h2><div class="card">{div}</div>'
@@ -478,7 +658,13 @@ h2 {{ color: #2d3436; margin-top: 40px; }}
     # ---- panel 6: needle coverage plot ----
 
     def _panel_needle_coverage(self):
-        """Needle plot: per-AA normalized coverage centered on 3' end."""
+        """Needle plot: symmetric funnel shapes per amino acid.
+
+        Matches the original TRNA_plot.plot_coverage(plot_type='needle'):
+        each AA is drawn as a symmetric area around its 3'-end midpoint,
+        creating a distinctive "needle" shape that fans out from the center
+        toward the 5' end proportional to coverage.
+        """
         if self.coverage_df is None or self.coverage_df.empty:
             return ''
 
@@ -492,72 +678,116 @@ h2 {{ color: #2d3436; margin-top: 40px; }}
             return ''
 
         aa_colors = _aa_palette()
-        n_bins = 100
 
         fig = go.Figure()
-        buttons = []
+        traces_per_sample = []
 
-        for s_idx, sample in enumerate(samples):
+        # Pre-compute all sample data
+        sample_data = []
+        for sample in samples:
             scov = self.coverage_df[
                 self.coverage_df['sample_name_unique'] == sample
             ]
-            aa_matrix, _ = self._normalize_coverage_matrix(scov, n_bins)
+            # Use aa_norm=True for needle plot (equal weight per AA at 3')
+            result = self._build_coverage_matrices(scov, aa_norm=True)
+            sample_data.append(result)
 
-            x_axis = np.linspace(0, 100, n_bins)
+        for s_idx, (sample, (cov_count, cov_count_sum, aa_ordered, max_len)) in enumerate(
+            zip(samples, sample_data)
+        ):
+            if cov_count is None:
+                traces_per_sample.append(0)
+                continue
+
             visible = (s_idx == 0)
+            n_aa = len(aa_ordered)
+            x_vals = list(range(max_len))
 
-            sorted_aas = [aa for aa in _AA_ORDER if aa in aa_matrix]
-            for extra_aa in sorted(set(aa_matrix) - set(_AA_ORDER)):
-                sorted_aas.append(extra_aa)
+            # Compute 3'-end midpoints for each AA (from stacked cumulative)
+            last_col = cov_count_sum[:, -1]  # shape (n_aa+1,)
+            last_col_mid = np.zeros(n_aa)
+            for i in range(n_aa):
+                last_col_mid[i] = last_col[i] + (last_col[i + 1] - last_col[i]) / 2
 
-            for aa in sorted_aas:
-                # Normalize each AA to its own 3' maximum
-                vals = aa_matrix[aa]
-                max_val = vals.max()
-                normed = vals / max_val if max_val > 0 else vals
+            # Build top/bottom funnel curves for each AA
+            cov_funnel_top = np.zeros((n_aa, max_len))
+            cov_funnel_bot = np.zeros((n_aa, max_len))
+            for j in range(max_len):
+                cov = cov_count[:, j]
+                cov_funnel_top[:, j] = last_col_mid + cov / 2
+                cov_funnel_bot[:, j] = last_col_mid - cov / 2
 
+            # Draw each needle as a filled area between bottom and top
+            for i in range(n_aa):
+                aa = aa_ordered[i]
                 color = aa_colors.get(aa, '#b2bec3')
+
+                # Bottom curve (invisible, fill anchor)
                 fig.add_trace(go.Scatter(
-                    x=x_axis,
-                    y=normed,
+                    x=x_vals, y=cov_funnel_bot[i].tolist(),
+                    mode='lines',
+                    line=dict(width=0, color='rgba(0,0,0,0)'),
+                    showlegend=False,
+                    visible=visible,
+                    hoverinfo='skip',
+                    line_shape='hv',
+                ))
+                # Top curve with fill to bottom
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=cov_funnel_top[i].tolist(),
                     mode='lines',
                     name=aa,
-                    line=dict(width=1.5, color=color),
+                    line=dict(width=0.5, color=color),
+                    line_shape='hv',
+                    fill='tonexty',
+                    fillcolor=color,
+                    opacity=0.7,
                     visible=visible,
                     showlegend=(s_idx == 0),
                     hovertemplate=f'{aa}<br>'
-                                 'Position: %{x:.0f}%<br>'
-                                 'Relative coverage: %{y:.2f}<extra></extra>',
+                                 "Position: %{{x}}<br>"
+                                 'Coverage: %{y:.4f}<extra></extra>',
                 ))
 
-            n_aas = len(sorted_aas)
-            vis = [False] * (len(samples) * n_aas) if n_aas > 0 else []
-            start = s_idx * n_aas
-            for j in range(n_aas):
-                vis[start + j] = True
-            buttons.append(dict(
+            n_traces = n_aa * 2  # baseline + top per AA
+            traces_per_sample.append(n_traces)
+
+        # Build dropdown buttons
+        total = sum(traces_per_sample)
+        final_buttons = []
+        offset = 0
+        for s_idx, sample in enumerate(samples):
+            n_t = traces_per_sample[s_idx]
+            if n_t == 0:
+                offset += n_t
+                continue
+            vis = [False] * total
+            for j in range(n_t):
+                vis[offset + j] = True
+            final_buttons.append(dict(
                 label=sample,
                 method='update',
                 args=[{'visible': vis}],
             ))
+            offset += n_t
 
-        if buttons:
+        if final_buttons:
             fig.update_layout(
                 updatemenus=[dict(
                     type='dropdown',
                     direction='down',
                     x=1.0, xanchor='right',
                     y=1.15, yanchor='top',
-                    buttons=buttons,
+                    buttons=final_buttons,
                     active=0,
                 )],
             )
 
         fig.update_layout(
             title='Per-AA Normalized Coverage (Needle Plot)',
-            xaxis_title='Normalized position (% of tRNA length)',
-            yaxis_title='Relative coverage (AA-normalized)',
-            height=500,
+            xaxis_title="5' to 3' index (mapped to longest tRNA)",
+            yaxis_title="Normalized coverage\n(amino acids equally weighed at 3')",
+            height=550,
         )
         div = self._fig_to_div(fig)
         return f'<h2>Needle Coverage Plot</h2><div class="card">{div}</div>'

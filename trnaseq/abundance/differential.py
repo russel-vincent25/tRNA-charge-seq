@@ -9,6 +9,7 @@ aggregation level (transcript, codon, aa), then runs DESeq2 via pyDESeq2.
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from itertools import combinations
 
 
 class DifferentialAbundance:
@@ -65,6 +66,7 @@ class DifferentialAbundance:
 
         # Set control group
         groups = sorted(set(self.condition_map.values()))
+        self._control_explicit = (control_group is not None)
         if control_group is not None:
             if control_group not in groups:
                 raise ValueError(f"control_group '{control_group}' not in groups: {groups}")
@@ -124,19 +126,28 @@ class DifferentialAbundance:
         )
         dds.deseq2()
 
-        # Extract results for control vs each other group
+        # Extract results: each group vs control (explicit) or all pairwise
         groups = sorted(set(meta['condition']))
-        other_groups = [g for g in groups if g != self.control_group]
 
         all_results = []
-        for group in other_groups:
+        if self._control_explicit:
+            # Each non-control group vs the designated control
+            other_groups = [g for g in groups if g != self.control_group]
+            pairs = [(g, self.control_group) for g in other_groups]
+        else:
+            # All pairwise combinations, both directions
+            pairs = []
+            for g1, g2 in combinations(groups, 2):
+                pairs.append((g1, g2))
+
+        for g1, g2 in pairs:
             stat_res = DeseqStats(
                 dds,
-                contrast=['condition', group, self.control_group],
+                contrast=['condition', g1, g2],
             )
             stat_res.summary()
             res_df = stat_res.results_df.copy()
-            res_df['comparison'] = f'{group}_vs_{self.control_group}'
+            res_df['comparison'] = f'{g1}_vs_{g2}'
             res_df['feature'] = res_df.index
             all_results.append(res_df)
 
