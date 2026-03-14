@@ -12,8 +12,10 @@ dependencies = [
     "pandas",
     "plotly",
     "matplotlib",
-    "pydeseq2",
 ]
+
+[project.optional-dependencies]
+abundance = ["pydeseq2"]
 
 [tool.setuptools.packages.find]
 include = ["trnaseq*"]
