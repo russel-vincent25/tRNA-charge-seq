@@ -1767,7 +1767,8 @@ class PreprocessingPipeline:
 
                     if json_paths:
                         crosstalk_df = ct_analyzer.analyze_multiple_samples(
-                            json_paths, mod_pos_dict
+                            json_paths, mod_pos_dict,
+                            n_jobs=self.n_jobs,
                         )
                         if not crosstalk_df.empty:
                             _save_df(crosstalk_df, output_dir / 'crosstalk_analysis')

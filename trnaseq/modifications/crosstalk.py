@@ -73,6 +73,34 @@ def _extract_read_mismatches(
     return result
 
 
+def _analyze_single_sample(
+    sample_name, json_path, mod_positions,
+    min_coverage, mismatch_threshold, alpha, min_fmax_score,
+) -> Optional[pd.DataFrame]:
+    """Worker function for parallel crosstalk analysis.
+
+    Returns:
+        DataFrame with crosstalk results and 'sample' column, or None.
+    """
+
+    analyzer = CrosstalkAnalyzer(
+        min_coverage=min_coverage,
+        mismatch_threshold=mismatch_threshold,
+        alpha=alpha,
+    )
+    try:
+        result = analyzer.analyze_sample(json_path, mod_positions, min_fmax_score)
+        if not result.empty:
+            result['sample'] = sample_name
+            return result
+    except Exception as exc:
+        warnings.warn(
+            f"Crosstalk analysis failed for {sample_name}: {exc}",
+            stacklevel=2,
+        )
+    return None
+
+
 class CrosstalkAnalyzer:
     """Analyze modification crosstalks from per-read alignment data.
 
@@ -123,93 +151,70 @@ class CrosstalkAnalyzer:
             lambda: [0, 0, 0, 0]
         )
 
-        # Stream the JSON
-        open_fn = bz2.open if str(json_path).endswith('.bz2') else open
-        try:
-            import json_stream
-            use_stream = True
-        except ImportError:
-            use_stream = False
+        # Pre-compute position sets for fast lookup
+        mod_position_sets: Dict[str, Set[int]] = {
+            name: set(positions)
+            for name, positions in mod_positions.items()
+            if len(positions) >= 2
+        }
 
-        if use_stream:
-            with open_fn(json_path, 'rt', encoding='utf-8') as fh:
-                data = json_stream.load(fh)
-                for read_id, align_dict in data.persistent().items():
-                    self._process_read(
-                        align_dict, mod_positions, min_fmax_score, contingency
-                    )
-        else:
-            with open_fn(json_path, 'rt', encoding='utf-8') as fh:
-                data = json.load(fh)
-            for read_id, align_dict in data.items():
-                self._process_read(
-                    align_dict, mod_positions, min_fmax_score, contingency
-                )
+        # Load and process JSON
+        open_fn = bz2.open if str(json_path).endswith('.bz2') else open
+        with open_fn(json_path, 'rt', encoding='utf-8') as fh:
+            data = json.load(fh)
+
+        for align_dict in data.values():
+            if not align_dict.get('aligned', False):
+                continue
+            if align_dict.get('Fmax_score', 0) < min_fmax_score:
+                continue
+
+            # Get tRNA name (first match if multi-mapped)
+            trna_name = align_dict.get('name', '')
+            if '@' in trna_name:
+                trna_name = trna_name.split('@')[0]
+
+            positions_set = mod_position_sets.get(trna_name)
+            if positions_set is None:
+                continue
+
+            qseq = align_dict.get('qseq', '')
+            dseq = align_dict.get('dseq', '')
+            dpos = align_dict.get('dpos', [0, 0])
+            dpos_start = dpos[0]
+
+            if not qseq or not dseq or dpos_start < 1:
+                continue
+
+            # Get mismatch status at each position of interest
+            mm_status = _extract_read_mismatches(
+                qseq, dseq, dpos_start, positions_set
+            )
+
+            # Update contingency tables for each pair covered by this read
+            covered = sorted(mm_status.keys())
+            for i in range(len(covered)):
+                for j in range(i + 1, len(covered)):
+                    pos_a, pos_b = covered[i], covered[j]
+                    a_mod = mm_status[pos_a]
+                    b_mod = mm_status[pos_b]
+
+                    key = (trna_name, pos_a, pos_b)
+                    if a_mod and b_mod:
+                        contingency[key][0] += 1  # both modified
+                    elif a_mod and not b_mod:
+                        contingency[key][1] += 1  # A only
+                    elif not a_mod and b_mod:
+                        contingency[key][2] += 1  # B only
+                    else:
+                        contingency[key][3] += 1  # neither
 
         # Build results DataFrame
-        return self._build_results(contingency, mod_positions)
-
-    def _process_read(
-        self,
-        align_dict: dict,
-        mod_positions: Dict[str, List[int]],
-        min_fmax_score: float,
-        contingency: Dict[Tuple[str, int, int], List[int]],
-    ) -> None:
-        """Process a single read's alignment data."""
-        # Filter: must be aligned with sufficient quality
-        if not align_dict.get('aligned', False):
-            return
-        if align_dict.get('Fmax_score', 0) < min_fmax_score:
-            return
-
-        # Get tRNA name (first match if multi-mapped)
-        trna_name = str(align_dict.get('name', ''))
-        if '@' in trna_name:
-            trna_name = trna_name.split('@')[0]
-
-        # Check if we have modification positions for this tRNA
-        positions = mod_positions.get(trna_name)
-        if not positions or len(positions) < 2:
-            return
-
-        qseq = str(align_dict.get('qseq', ''))
-        dseq = str(align_dict.get('dseq', ''))
-        dpos_raw = align_dict.get('dpos', [0, 0])
-        # json_stream returns PersistentStreamingJSONList; convert to plain list
-        dpos = list(dpos_raw) if not isinstance(dpos_raw, (list, tuple)) else dpos_raw
-        dpos_start = int(dpos[0])
-
-        if not qseq or not dseq or dpos_start < 1:
-            return
-
-        positions_set = set(positions)
-
-        # Get mismatch status at each position of interest
-        mm_status = _extract_read_mismatches(qseq, dseq, dpos_start, positions_set)
-
-        # For each pair of positions both covered by this read, update contingency
-        covered = sorted(mm_status.keys())
-        for i in range(len(covered)):
-            for j in range(i + 1, len(covered)):
-                pos_a, pos_b = covered[i], covered[j]
-                a_mod = mm_status[pos_a]
-                b_mod = mm_status[pos_b]
-
-                key = (trna_name, pos_a, pos_b)
-                if a_mod and b_mod:
-                    contingency[key][0] += 1  # both modified
-                elif a_mod and not b_mod:
-                    contingency[key][1] += 1  # A only
-                elif not a_mod and b_mod:
-                    contingency[key][2] += 1  # B only
-                else:
-                    contingency[key][3] += 1  # neither
+        return self._build_results(contingency)
 
     def _build_results(
         self,
         contingency: Dict[Tuple[str, int, int], List[int]],
-        mod_positions: Dict[str, List[int]],
     ) -> pd.DataFrame:
         """Convert contingency tables to a results DataFrame."""
         rows = []
@@ -292,6 +297,7 @@ class CrosstalkAnalyzer:
         json_paths: Dict[str, Path],
         mod_positions: Dict[str, List[int]],
         min_fmax_score: float = 0.8,
+        n_jobs: int = 1,
     ) -> pd.DataFrame:
         """Analyze crosstalks across multiple samples and aggregate.
 
@@ -299,25 +305,37 @@ class CrosstalkAnalyzer:
             json_paths: Dict mapping sample name to SWalign JSON path.
             mod_positions: Dict mapping tRNA name to modification positions.
             min_fmax_score: Minimum fractional alignment score.
+            n_jobs: Number of parallel workers.  When > 1, uses mpire for
+                parallel processing across samples.
 
         Returns:
             DataFrame with per-sample and aggregated crosstalk results.
         """
-        all_results = []
+        work_items = [
+            (sample_name, json_path, mod_positions,
+             self.min_coverage, self.mismatch_threshold,
+             self.alpha, min_fmax_score)
+            for sample_name, json_path in json_paths.items()
+        ]
 
-        for sample_name, json_path in json_paths.items():
+        if n_jobs > 1 and len(work_items) > 1:
             try:
-                result = self.analyze_sample(
-                    json_path, mod_positions, min_fmax_score
-                )
-                if not result.empty:
-                    result['sample'] = sample_name
-                    all_results.append(result)
-            except Exception as exc:
+                from mpire import WorkerPool
+                with WorkerPool(n_jobs=n_jobs) as pool:
+                    results = pool.map(
+                        _analyze_single_sample, work_items,
+                        progress_bar=False,
+                    )
+            except ImportError:
                 warnings.warn(
-                    f"Crosstalk analysis failed for {sample_name}: {exc}",
+                    "mpire not available; falling back to sequential processing.",
                     stacklevel=2,
                 )
+                results = [_analyze_single_sample(*item) for item in work_items]
+        else:
+            results = [_analyze_single_sample(*item) for item in work_items]
+
+        all_results = [r for r in results if r is not None]
 
         if not all_results:
             return pd.DataFrame()
