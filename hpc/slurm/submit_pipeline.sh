@@ -97,7 +97,7 @@ MEM_0C1="2G"
 # 42 min for 24 samples with 4 CPUs → scales ~linearly with N_SAMPLES/CPUS
 # 16 CPUs keeps 264 samples under 4h; RAM scales with sample count
 CPUS_2356=16
-if [ $N_SAMPLES -lt 64 ]; then MEM_2356="16G"; else MEM_2356="32G"; fi
+MEM_2356="$(( CPUS_2356 * 2 ))G"   # 2 GB per worker — stats collection is RAM-greedy
 # ~1.75 min per sample per CPU for stats/charge/QC, plus ~30 min fixed
 # overhead for modification analysis (PSCM + crosstalk). Min 2h, cap 12h.
 TIME_2356_MIN=$(( (N_SAMPLES * 2 / CPUS_2356 + 1) * 3 + 30 ))
