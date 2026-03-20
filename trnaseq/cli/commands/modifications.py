@@ -8,7 +8,7 @@ Usage:
     python -m trnaseq modifications \
         --json-dir data/SWalign/ \
         --reference tRNA_database/human/human-tRNAs.fa \
-        --output-dir modification_analysis/ \
+        --output-dir results/modifications/ \
         --organism "Homo sapiens" \
         --discover-novel
 """

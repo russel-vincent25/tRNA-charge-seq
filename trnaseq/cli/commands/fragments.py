@@ -10,7 +10,7 @@ Usage:
         --stats-dir data/stats_collection/ \
         --min-reads 10 \
         --csv \
-        -o fragment_analysis/
+        -o results/fragments/
 """
 
 import argparse

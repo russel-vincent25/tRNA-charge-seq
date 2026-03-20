@@ -79,7 +79,7 @@ class QCReportGenerator:
 
         # Add charge mean per sample (if stage 3 ran)
         if self.charge_summary_df is not None and len(self.charge_summary_df) > 0:
-            charge_file = self.project_dir / 'charge_analysis' / 'charge_df_transcript.csv'
+            charge_file = self.project_dir / 'results' / 'charge' / 'charge_df_transcript.csv'
             if charge_file.exists():
                 charge_df = pd.read_csv(charge_file)
                 if 'charge_canonical' in charge_df.columns:

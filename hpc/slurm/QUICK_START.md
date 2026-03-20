@@ -10,7 +10,6 @@ cd /home/$USER/github_repos
 
 git clone https://github.com/russel-vincent25/tRNA-charge-seq.git
 cd tRNA-charge-seq
-git checkout enhanced-tRNAseq-analysis
 ```
 
 ### Create conda environment
@@ -40,6 +39,7 @@ conda create -n tRNA-seq python=3.10 -y
 conda activate tRNA-seq
 conda install -c conda-forge -c bioconda numpy">=1.24,<1.26" pandas">=2.0,<2.2" scipy">=1.11,<1.15" matplotlib seaborn==0.13.0 plotly logomaker biopython openpyxl xlrd pyarrow pyyaml mpire jellyfish json_stream natsort tqdm adapterremoval swipe blast bzip2 pigz pillow wand imagemagick pytest -y
 pip install pydeseq2
+pip install -e .
 ```
 
 ---
@@ -62,19 +62,24 @@ The pipeline creates all output alongside `data/`:
 project_dir/
 ├── config.yaml
 ├── sample_list.xlsx
-├── ALL_stats_aggregate.csv       # tRNA counts per sample
-├── QC_report.html                # Interactive Plotly dashboard
-├── QC_summary.csv                # Per-sample metrics
-├── charge_analysis/              # charge_df_{aa,codon,transcript}.csv
-├── sample_df.xlsx                # Updated sample metadata
-├── pipeline.log                  # Pipeline log
-└── data/
-    ├── raw_fastq/                # Original FASTQs (already here)
-    ├── AdapterRemoval/           # Merged reads
-    ├── BC_split/                 # Barcode-split FASTQs
-    ├── UMI_trimmed/              # UMI-trimmed reads
-    ├── SWalign/                  # Alignment JSONs
-    └── stats_collection/         # Per-sample + aggregate stats
+├── sample_df.xlsx                   # Updated sample metadata
+├── logs/
+│   ├── pipeline.log                 # Pipeline log
+│   └── computing_metrics.csv        # Per-stage timing
+├── data/
+│   ├── raw_fastq/                   # Original FASTQs (already here)
+│   ├── AdapterRemoval/              # Merged reads
+│   ├── BC_split/                    # Barcode-split FASTQs
+│   ├── UMI_trimmed/                 # UMI-trimmed reads
+│   ├── SWalign/                     # Alignment JSONs
+│   └── stats_collection/            # Per-sample + aggregate stats
+├── results/
+│   ├── charge/                      # charge_df_{aa,codon,transcript}.csv
+│   ├── fragments/                   # Fragment counts, RT drop-off, lengths
+│   ├── parquet/                     # Parquet-format data (optional)
+│   ├── modifications/               # PSCM, modification calls, crosstalk
+│   └── abundance/                   # DESeq2 results + volcano/MA plots
+└── qc_reports/                      # QC_report.html + QC_summary.csv
 ```
 
 ### Path resolution
@@ -85,12 +90,12 @@ Config paths can be **relative** (resolved against `--project-dir`) or **absolut
 # Relative — resolved to {project_dir}/sample_list.xlsx
 sample_list: "sample_list.xlsx"
 
-# Absolute — used as-is
+# Absolute — used as-is (recommended for repo-level files)
 index_list: "/home/ruv988/github_repos/tRNA-charge-seq/utils/index_list_updated.xlsx"
 ```
 
 Fields that support relative paths: `sample_list`, `index_list`, `SWIPE_score_mat`,
-`common_seqs`, and all `tRNA_database` entries.
+`common_seqs`, `adapter_sequences`, and all `tRNA_database` entries.
 
 ### If your data already has the right structure
 
@@ -98,7 +103,6 @@ Point `--project-dir` at the existing experiment directory and copy configs into
 
 ```bash
 export PROJECT_DIR="/n/scratch/users/r/$USER/experiment/2025-01-24-run"
-# Copy config + sample list into the project dir
 cp config.yaml sample_list.xlsx "$PROJECT_DIR/"
 ```
 
@@ -119,6 +123,10 @@ cp config.yaml sample_list.xlsx "$PROJECT_DIR/"
 ls "$PROJECT_DIR/data/raw_fastq/"*_R1.fastq.bz2 | wc -l   # Should match N_SAMPLES
 ls "$PROJECT_DIR/config"*.yaml "$PROJECT_DIR/sample_list"*  # Configs present
 mkdir -p /home/$USER/jobOutput                               # For SLURM logs
+
+# Run preflight checks
+cd /home/$USER/github_repos/tRNA-charge-seq
+python -m trnaseq pipeline --config "$PROJECT_DIR/config.yaml" --project-dir "$PROJECT_DIR" --preflight
 ```
 
 ---
@@ -136,15 +144,15 @@ JOB1: stage0c_1.job       (array job, 0-N samples)
   Stages 0c + 1: UMI trim + SWIPE alignment (per sample)
       │
       ▼
-JOB2: stage2_5.job        (single job)
-  Stages 2 + 3 + 5: Stats + Charge + QC report
+JOB2: stage2_6.job        (single job)
+  Stages 2 + 3 + 5 + 6 + 7: Stats + Charge + Fragments + QC + Mods + Abundance
 ```
 
-| File | Type | Default Resources | Time |
-|------|------|-------------------|------|
-| `stage0ab.job` | Single job | 4 CPU, 16G | 1 hr |
-| `stage0c_1.job` | Array job | 4 CPU, 8G per task | 45 min |
-| `stage2_5.job` | Single job | 16 CPU, 32G | 8 hr |
+| File | Type | Default Resources |
+|------|------|-------------------|
+| `stage0ab.job` | Single job | Auto-scaled CPUs, 4G |
+| `stage0c_1.job` | Array job | 2 CPU, 2G per task, 8h |
+| `stage2_6.job` | Single job | 16 CPU, 16-32G, 2-12h |
 
 **Thread awareness:** The pipeline uses `--threads-per-job` to control how many
 threads each AdapterRemoval or SWIPE subprocess uses. Stage 0ab computes
@@ -178,37 +186,36 @@ bash hpc/slurm/submit_pipeline.sh <config.yaml> <project_dir> [n_samples] [max_c
 Example:
 
 ```bash
-bash hpc/slurm/submit_pipeline.sh "$PROJECT_DIR/config.yaml" "$PROJECT_DIR" 72 32
+bash hpc/slurm/submit_pipeline.sh "$PROJECT_DIR/config.yaml" "$PROJECT_DIR"
 ```
 
 ### Option B: Manual submission
 
-Submit each `.job` file yourself with `sbatch`. Pass resource overrides and
-`threads_per_job` (3rd arg to stage0ab.job, default 2):
+Submit each `.job` file yourself with `sbatch`:
 
 ```bash
 REPO="/home/$USER/github_repos/tRNA-charge-seq"
 CONFIG="$PROJECT_DIR/config.yaml"
 N=71  # Number of samples minus 1 (0-indexed)
 
-# Job 0: Merge + BC split (8 jobs × 2 threads = 16 CPUs)
+# Job 0: Merge + BC split
 JOB0=$(sbatch --parsable \
-    --cpus-per-task=16 --mem=32G -t 01:00:00 \
+    --cpus-per-task=16 --mem=4G -t 02:00:00 \
     "$REPO/hpc/slurm/stage0ab.job" "$CONFIG" "$PROJECT_DIR" 2)
 echo "JOB0: $JOB0"
 
-# Job 1: Per-sample UMI + alignment (1 job × 4 SWIPE threads per task)
+# Job 1: Per-sample UMI + alignment
 JOB1=$(sbatch --parsable \
     --dependency=afterok:${JOB0} --array=0-${N}%32 \
-    --cpus-per-task=4 --mem=8G -t 00:45:00 \
+    --cpus-per-task=2 --mem=2G -t 08:00:00 \
     "$REPO/hpc/slurm/stage0c_1.job" "$CONFIG" "$PROJECT_DIR")
 echo "JOB1: $JOB1"
 
-# Job 2: Stats + charge + QC
+# Job 2: Stats + charge + fragments + QC + mods + abundance
 JOB2=$(sbatch --parsable \
     --dependency=afterok:${JOB1} \
-    --cpus-per-task=16 --mem=32G -t 02:00:00 \
-    "$REPO/hpc/slurm/stage2_5.job" "$CONFIG" "$PROJECT_DIR")
+    --cpus-per-task=16 --mem=32G -t 04:00:00 \
+    "$REPO/hpc/slurm/stage2_6.job" "$CONFIG" "$PROJECT_DIR")
 echo "JOB2: $JOB2"
 ```
 
@@ -216,11 +223,13 @@ echo "JOB2: $JOB2"
 
 ## 5. Estimated Runtimes
 
-| Dataset | 0a+0b | 0c+1 (wall) | 2+3+5 | Total |
-|---------|-------|-------------|-------|-------|
-| 24 samples | ~15 min | ~59 min | ~42 min | **~2 hours** |
-| 72 samples | ~25 min | ~59 min | ~1.5 hr | **~2.5 hours** |
-| 264 samples | ~35 min | ~59 min | ~4 hr | **~5 hours** |
+| Dataset | 0a+0b | 0c+1 (wall) | 2+3+5+6+7 | Total |
+|---------|-------|-------------|------------|-------|
+| 24 samples | ~15 min | ~59 min | ~50 min | ~2 hours |
+| 72 samples | ~25 min | ~59 min | ~2 hr | ~3 hours |
+| 264 samples | ~35 min | ~59 min | ~5 hr | ~6 hours |
+
+Stage 2+3+5+6+7 includes ~30 min overhead for modification analysis (PSCM extraction + SLAC crosstalk). The launcher allocates a minimum of 2 hours.
 
 ---
 
@@ -245,20 +254,22 @@ sacct -j <JOB1> --format=JobID,State,ExitCode | grep -v COMPLETED
 ## 7. Verifying Results
 
 ```bash
-# Check output files
-ls "$PROJECT_DIR/QC_report.html" "$PROJECT_DIR/QC_summary.csv" \
-   "$PROJECT_DIR/ALL_stats_aggregate.csv" "$PROJECT_DIR/charge_analysis/"
+# Check output directories
+ls "$PROJECT_DIR/qc_reports/QC_report.html" \
+   "$PROJECT_DIR/results/charge/" \
+   "$PROJECT_DIR/results/fragments/" \
+   "$PROJECT_DIR/results/modifications/"
 
 # Quick sanity check
 python -c "
 import pandas as pd
-qc = pd.read_csv('$PROJECT_DIR/QC_summary.csv')
-print(qc[['sample_name_unique', 'N_input_reads', 'N_after_trim', 'Mapping_percent']].to_string())
+qc = pd.read_csv('$PROJECT_DIR/qc_reports/QC_summary.csv')
+print(qc[['sample_name_unique', 'N_pairs', 'N_total_aligned']].to_string())
 print(f'\n{len(qc)} samples processed')
 "
 
 # Download QC report to view in browser
-scp $USER@transfer.rc.hms.harvard.edu:$PROJECT_DIR/QC_report.html ~/Desktop/
+scp $USER@transfer.rc.hms.harvard.edu:$PROJECT_DIR/qc_reports/QC_report.html ~/Desktop/
 ```
 
 ---
@@ -272,7 +283,15 @@ If specific array tasks fail (e.g., tasks 5 and 12):
 sbatch --array=5,12 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
 
 # Then re-run aggregation
-sbatch $REPO/hpc/slurm/stage2_5.job "$CONFIG" "$PROJECT_DIR"
+sbatch $REPO/hpc/slurm/stage2_6.job "$CONFIG" "$PROJECT_DIR"
+```
+
+To re-run only specific analysis stages (e.g., just modifications):
+
+```bash
+sbatch --mem=32G -c 16 -p short -t 2:00:00 \
+    --wrap "module load conda/miniforge3/24.11.3-0; conda activate tRNA-seq; \
+    python -m trnaseq pipeline --config $CONFIG --project-dir $PROJECT_DIR --stages 6"
 ```
 
 ---
@@ -283,17 +302,14 @@ The launcher (`submit_pipeline.sh`) auto-computes CPUs, memory, and wall time
 from `N_SAMPLES`. For manual runs, override `.job` defaults on the command line:
 
 ```bash
-# More memory for alignment-heavy samples
-sbatch --mem=16G --array=0-71%32 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
+# More memory for large sample counts
+sbatch --mem=64G $REPO/hpc/slurm/stage2_6.job "$CONFIG" "$PROJECT_DIR"
 
-# More time
-sbatch -t 01:30:00 --array=0-71%32 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
+# More time for modification analysis with many samples
+sbatch -t 08:00:00 $REPO/hpc/slurm/stage2_6.job "$CONFIG" "$PROJECT_DIR"
 
 # Fewer concurrent tasks (if admin requests)
 sbatch --array=0-71%16 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
-
-# More CPUs for stage 0ab (pass threads_per_job as 3rd arg)
-sbatch --cpus-per-task=16 $REPO/hpc/slurm/stage0ab.job "$CONFIG" "$PROJECT_DIR" 2
 ```
 
 **Thread tuning:** `threads_per_job` controls how many threads each AdapterRemoval
@@ -303,19 +319,45 @@ Default is 2.
 
 ---
 
-## 10. Troubleshooting
+## 10. Clean Re-run
+
+To start fresh (e.g., after config changes or code updates):
+
+```bash
+cd $PROJECT_DIR
+
+# Remove all outputs
+rm -rf results/ qc_reports/ logs/
+rm -f inp_file_df.xlsx sample_df.xlsx
+
+# Remove per-sample data (forces full reprocess)
+rm -rf data/AdapterRemoval data/BC_split data/UMI_trimmed data/SWalign data/stats_collection
+
+# Pull latest code and reinstall
+cd /home/$USER/github_repos/tRNA-charge-seq
+git pull
+pip install -e .
+
+# Resubmit
+bash hpc/slurm/submit_pipeline.sh "$PROJECT_DIR/config.yaml" "$PROJECT_DIR"
+```
+
+---
+
+## 11. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | `conda: command not found` | `module load conda/miniforge3/24.11.3-0` |
-| `ModuleNotFoundError: plotly` | `conda install -c conda-forge plotly` |
+| `No module named trnaseq` | `pip install -e .` from the repo root |
+| `requires a different Python: 3.9` | Supported — `requires-python >= 3.9` |
 | `ModuleNotFoundError: pydeseq2` | `pip install pydeseq2` |
+| `GLIBCXX_3.4.30 not found` (scipy) | `pip install scipy==1.11.4` |
 | Array task OOM killed | Resubmit with `--mem=16G` |
 | Array task timeout | Resubmit with `-t 01:30:00` |
-| Stage 0a timeout (CPU oversubscription) | Launcher now auto-sizes; or pass `threads_per_job` as 3rd arg to stage0ab.job |
+| Stage 2 OOM with many samples | Use `--mem=64G` or reduce `--n-jobs 4` |
 | `FileNotFoundError: sample_list` | Check sample list is in `$PROJECT_DIR` |
 | `FileNotFoundError: raw_fastq` | Check path: `ls $PROJECT_DIR/data/raw_fastq/` |
 | Stage 2 fails (no stats) | Check JOB1 logs — some array tasks may have failed |
-| `tRNA_database` not found | Verify the absolute path in config exists on O2 |
-| `No module named trnaseq` | Run `pip install -e .` from the repo root (one-time, persists across git pulls) |
+| `tRNA_database` not found | Verify absolute path in config exists on O2 |
 | `swipe: command not found` | Conda env not activated — check `.job` module load |

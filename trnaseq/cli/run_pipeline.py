@@ -18,13 +18,14 @@ Combines all preprocessing and analysis steps into a single script:
 Output:
 - inp_file_df.xlsx (input file summary)
 - sample_df.xlsx (sample information with QC metrics)
+- logs/pipeline.log, logs/computing_metrics.csv (operational files)
 - data/stats_collection/ALL_stats_aggregate.csv (combined statistics)
-- charge_analysis/ (charge quantification + report, if enabled)
-- fragment_analysis/ (fragment classification + RT drop-off + report, if enabled)
+- results/charge/ (charge quantification + report, if enabled)
+- results/fragments/ (fragment classification + RT drop-off + report, if enabled)
+- results/parquet/ (parquet-format data, if enabled)
+- results/modifications/ (modification calls + report, if enabled)
+- results/abundance/ (differential abundance + report, if enabled)
 - qc_reports/ (QC dashboard, if enabled)
-- parquet_data/ (parquet-format data, if enabled)
-- modification_analysis/ (modification calls + report, if enabled)
-- abundance_analysis/ (differential abundance + report, if enabled)
 
 Usage:
     python -m trnaseq pipeline \
@@ -289,10 +290,13 @@ class PreprocessingPipeline:
         self.project_dir = Path(project_dir).resolve()
         self.n_jobs = n_jobs
         self.sample_index = sample_index
-        self.log_file = self.project_dir / "pipeline.log"
-
         # Create output directory
         self.project_dir.mkdir(parents=True, exist_ok=True)
+
+        # Log file goes in logs/ subdirectory
+        logs_dir = self.project_dir / 'logs'
+        logs_dir.mkdir(exist_ok=True)
+        self.log_file = logs_dir / "pipeline.log"
 
         # Load configuration
         with open(self.config_file, 'r') as f:
@@ -891,6 +895,12 @@ class PreprocessingPipeline:
         self.log(f"Loaded {len(self.sample_df)} samples")
         self.log(f"Input files: {len(self.inp_file_df)}")
 
+    def _ensure_dir(self, *parts) -> Path:
+        """Create and return a subdirectory under project_dir."""
+        p = self.project_dir.joinpath(*parts)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
     def setup_directories(self):
         """Setup directory structure"""
         self.log("Setting up directories...")
@@ -904,21 +914,19 @@ class PreprocessingPipeline:
             'UMI_dir': 'UMI_trimmed',
             'align_dir': 'SWalign',
             'stats_dir': 'stats_collection',
-            'charge_dir': 'charge_analysis',
-            'parquet_dir': 'parquet_data',
         }
 
-        # Create data directory
+        # Create data directory and preprocessing subdirectories
         (self.project_dir / 'data').mkdir(exist_ok=True)
-
-        # Create subdirectories under data/
         for dir_name in ['AdapterRemoval', 'BC_split', 'UMI_trimmed',
                          'SWalign', 'stats_collection']:
             (self.project_dir / 'data' / dir_name).mkdir(exist_ok=True)
 
-        # Create analysis directories
-        for dir_name in ['charge_analysis', 'parquet_data']:
-            (self.project_dir / dir_name).mkdir(exist_ok=True)
+        # Warn about legacy directories from previous versions
+        for old in ['charge_analysis', 'fragment_analysis', 'modification_analysis',
+                     'abundance_analysis', 'parquet_data']:
+            if (self.project_dir / old).exists():
+                self.log(f"  NOTE: Legacy directory '{old}/' found — new outputs go to results/", level="WARN")
 
     def _get_working_sample_df(self):
         """Return sample_df subset if --sample-index is set, else full."""
@@ -1230,8 +1238,7 @@ class PreprocessingPipeline:
             self.log(f"  Loaded {len(quantifier.stats_df)} alignment records")
 
             # Create output directory
-            charge_dir = self.project_dir / 'charge_analysis'
-            charge_dir.mkdir(exist_ok=True)
+            charge_dir = self._ensure_dir('results', 'charge')
 
             # Quantify and export for each level
             self.charge_results = {}
@@ -1326,7 +1333,7 @@ class PreprocessingPipeline:
             )
             analyser.run()
 
-            frag_dir = self.project_dir / 'fragment_analysis'
+            frag_dir = self._ensure_dir('results', 'fragments')
             write_csv = self.config.get('fragment_write_csv', False)
             analyser.export(frag_dir, write_csv=write_csv)
 
@@ -1338,7 +1345,7 @@ class PreprocessingPipeline:
                 self.log(f"  Fragment analysis complete ({n_samples} samples):")
                 self.log(f"    Full-length:  {fl.min():.1f} – {fl.max():.1f}%  (mean {fl.mean():.1f}%)")
                 self.log(f"    RT drop-off:  {rt.min():.1f} – {rt.max():.1f}%  (mean {rt.mean():.1f}%)")
-                self.log(f"    See qc_reports/fragment_report.html for per-sample details")
+                self.log(f"    See results/fragments/ and qc_reports/fragment_report.html for details")
             else:
                 self.log("  Fragment analysis complete!")
 
@@ -1388,7 +1395,7 @@ class PreprocessingPipeline:
 
         try:
             # Initialize data store
-            parquet_dir = self.project_dir / 'parquet_data'
+            parquet_dir = self._ensure_dir('results', 'parquet')
             store = tRNAseqDataStore(str(parquet_dir))
 
             compression = self.config.get('parquet_compression', 'snappy')
@@ -1416,7 +1423,7 @@ class PreprocessingPipeline:
                 self.log(f"    Compression ratio: {ratio:.1f}x")
 
             # Convert charge CSVs to Parquet if they exist
-            charge_dir = self.project_dir / 'charge_analysis'
+            charge_dir = self.project_dir / 'results' / 'charge'
             if charge_dir.exists():
                 charge_parquet_dir = parquet_dir / 'charge'
                 charge_parquet_dir.mkdir(parents=True, exist_ok=True)
@@ -1427,8 +1434,8 @@ class PreprocessingPipeline:
                     df.to_parquet(out_path, compression=compression)
                     self.log(f"    Saved: {out_path.name}")
 
-            # Copy fragment parquet files into parquet_data/fragments/
-            frag_dir = self.project_dir / 'fragment_analysis'
+            # Copy fragment parquet files into results/parquet/fragments/
+            frag_dir = self.project_dir / 'results' / 'fragments'
             if frag_dir.exists():
                 frag_parquet_dir = parquet_dir / 'fragments'
                 frag_parquet_dir.mkdir(parents=True, exist_ok=True)
@@ -1471,7 +1478,7 @@ class PreprocessingPipeline:
             # Load charge summary if not already in memory
             charge_summary = getattr(self, 'charge_summary_df', None)
             if charge_summary is None:
-                cs_file = self.project_dir / 'charge_analysis' / 'charge_summary.csv'
+                cs_file = self.project_dir / 'results' / 'charge' / 'charge_summary.csv'
                 if cs_file.exists():
                     charge_summary = pd.read_csv(cs_file)
 
@@ -1548,8 +1555,7 @@ class PreprocessingPipeline:
             )
 
             json_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
-            output_dir = self.project_dir / 'modification_analysis'
-            output_dir.mkdir(exist_ok=True)
+            output_dir = self._ensure_dir('results', 'modifications')
 
             sample_names = self.sample_df['sample_name_unique'].tolist()
 
@@ -1872,9 +1878,9 @@ class PreprocessingPipeline:
             self.log(f"  DESeq2 results: {len(results)} comparisons")
 
             # Export results
-            abundance_dir = self.project_dir / 'abundance_analysis'
+            abundance_dir = self._ensure_dir('results', 'abundance')
             da.export_results(abundance_dir)
-            self.log(f"  Saved results to abundance_analysis/")
+            self.log(f"  Saved results to results/abundance/")
 
             # Generate report
             if ABUNDANCE_REPORT_AVAILABLE and not results.empty:
@@ -1984,7 +1990,7 @@ class PreprocessingPipeline:
         if agg_stats.exists():
             df['aggregate_stats_MB'] = self._file_size_mb(agg_stats)
 
-        out_path = self.project_dir / 'computing_metrics.csv'
+        out_path = self._ensure_dir('logs') / 'computing_metrics.csv'
         df.to_csv(out_path, index=False)
         self.log(f"  Saved computing metrics: {out_path} ({len(df)} samples)")
 
@@ -2011,10 +2017,10 @@ class PreprocessingPipeline:
         else:
             self.log(f"  WARNING: ALL_stats_aggregate.csv not found", level="WARN")
 
-        # Charge results live in charge_analysis/ (no root copies)
+        # Charge results live in results/charge/ (no root copies)
         if hasattr(self, 'charge_results') and self.charge_results:
             for level in self.charge_results:
-                self.log(f"  Charge: charge_analysis/charge_df_{level}.csv")
+                self.log(f"  Charge: results/charge/charge_df_{level}.csv")
 
     @staticmethod
     def parse_stages(stages_str):
@@ -2270,16 +2276,16 @@ class PreprocessingPipeline:
 
             # List charge results if generated
             if '3' in self.status['stages_completed']:
-                self.log(f"  - charge_analysis/charge_df_*.csv")
-                self.log(f"  - charge_analysis/charge_summary.csv")
+                self.log(f"  - results/charge/charge_df_*.csv")
+                self.log(f"  - results/charge/charge_summary.csv")
                 if hasattr(self, '_fragment_analysis_ran'):
-                    self.log(f"  - fragment_analysis/*.parquet")
+                    self.log(f"  - results/fragments/*.parquet")
 
             if '5' in self.status['stages_completed']:
                 self.log(f"  - qc_reports/QC_summary.csv")
                 self.log(f"  - qc_reports/QC_report.html")
 
-            self.log(f"  - computing_metrics.csv")
+            self.log(f"  - logs/computing_metrics.csv")
             self.log("")
             if '3' not in self.status['stages_completed']:
                 self.log("Next step: Run charge quantification (Stage 3)")
