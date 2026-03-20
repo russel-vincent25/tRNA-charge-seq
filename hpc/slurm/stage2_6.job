@@ -30,6 +30,7 @@ echo ""
 # Load modules and activate conda environment
 module load conda/miniforge3/24.11.3-0
 conda activate tRNA-seq
+export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6 
 
 python -m trnaseq pipeline \
     --config "$CONFIG" \
