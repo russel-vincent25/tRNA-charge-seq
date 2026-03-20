@@ -37,6 +37,7 @@ PROJECT_DIR="$(realpath "$PROJECT_DIR")"
 # --- Load conda for auto-detection (login node) ---
 module load conda/miniforge3/24.11.3-0 2>/dev/null || true
 conda activate tRNA-seq 2>/dev/null || true
+export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6
 
 # --- Auto-detect N_SAMPLES ---
 if [ -n "${3:-}" ]; then
