@@ -4,7 +4,7 @@ A comprehensive toolkit for tRNA sequencing analysis including charge state quan
 modification detection, and fragment analysis.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.2"
 
 # High-level API imports will be added as modules are completed
 # from .modifications import ModificationAnalyzer
