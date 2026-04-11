@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# Stage 2 (Stats) + Stage 3 (Charge) + Stage 5 (QC) + Stage 6 (Mods) + Stage 7 (Abundance)
+# Stage 2 (Stats) + 3 (Charge) + 4 (Parquet) + 5 (QC) + 6 (Mods) + 7 (Abundance)
 # Aggregation step — processes ALL samples together.
-# Reads per-sample alignment JSONs, computes stats, charge, QC, modifications, and abundance.
+# Reads per-sample alignment JSONs, computes stats, charge, parquet mirrors,
+# QC report, modifications + crosstalk, and abundance.
 
 #SBATCH --cpus-per-task=16
 #SBATCH -p short
@@ -19,7 +20,7 @@ set -euo pipefail
 CONFIG="$1"
 PROJECT_DIR="$2"
 
-echo "=== tRNA-charge-seq: Stage 2 + 3 + 5 + 6 + 7 ==="
+echo "=== tRNA-charge-seq: Stage 2 + 3 + 4 + 5 + 6 + 7 ==="
 echo "Config:  $CONFIG"
 echo "Project: $PROJECT_DIR"
 echo "Node:    $(hostname)"
@@ -36,10 +37,10 @@ python -m trnaseq pipeline \
     --config "$CONFIG" \
     --project-dir "$PROJECT_DIR" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-16}" \
-    --stages 2,3,5,6,7
+    --stages 2,3,4,5,6,7
 
 if [ $? -ne 0 ]; then
-    echo "Error: Stages 2+3+5+6+7 failed" >&2
+    echo "Error: Stages 2+3+4+5+6+7 failed" >&2
     exit 1
 fi
 
