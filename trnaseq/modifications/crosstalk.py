@@ -24,7 +24,7 @@ References:
 """
 
 import bz2
-import json
+import json_stream
 import warnings
 import numpy as np
 import pandas as pd
@@ -158,56 +158,57 @@ class CrosstalkAnalyzer:
             if len(positions) >= 2
         }
 
-        # Load and process JSON
+        # Stream JSON to avoid loading multi-GB alignment files into memory.
+        # Using json_stream (same pattern as PositionalExtractor) keeps per-worker
+        # RSS bounded so mpire pools don't get SIGKILLed by the OOM killer.
         open_fn = bz2.open if str(json_path).endswith('.bz2') else open
         with open_fn(json_path, 'rt', encoding='utf-8') as fh:
-            data = json.load(fh)
+            data = json_stream.load(fh)
+            for _read_id, align_dict in data.persistent().items():
+                if not align_dict.get('aligned', False):
+                    continue
+                if float(align_dict.get('Fmax_score', 0)) < min_fmax_score:
+                    continue
 
-        for align_dict in data.values():
-            if not align_dict.get('aligned', False):
-                continue
-            if align_dict.get('Fmax_score', 0) < min_fmax_score:
-                continue
+                # Get tRNA name (first match if multi-mapped)
+                trna_name = align_dict.get('name', '')
+                if '@' in trna_name:
+                    trna_name = trna_name.split('@')[0]
 
-            # Get tRNA name (first match if multi-mapped)
-            trna_name = align_dict.get('name', '')
-            if '@' in trna_name:
-                trna_name = trna_name.split('@')[0]
+                positions_set = mod_position_sets.get(trna_name)
+                if positions_set is None:
+                    continue
 
-            positions_set = mod_position_sets.get(trna_name)
-            if positions_set is None:
-                continue
+                qseq = align_dict.get('qseq', '')
+                dseq = align_dict.get('dseq', '')
+                dpos = align_dict.get('dpos', [0, 0])
+                dpos_start = int(dpos[0]) if dpos else 0
 
-            qseq = align_dict.get('qseq', '')
-            dseq = align_dict.get('dseq', '')
-            dpos = align_dict.get('dpos', [0, 0])
-            dpos_start = dpos[0]
+                if not qseq or not dseq or dpos_start < 1:
+                    continue
 
-            if not qseq or not dseq or dpos_start < 1:
-                continue
+                # Get mismatch status at each position of interest
+                mm_status = _extract_read_mismatches(
+                    qseq, dseq, dpos_start, positions_set
+                )
 
-            # Get mismatch status at each position of interest
-            mm_status = _extract_read_mismatches(
-                qseq, dseq, dpos_start, positions_set
-            )
+                # Update contingency tables for each pair covered by this read
+                covered = sorted(mm_status.keys())
+                for i in range(len(covered)):
+                    for j in range(i + 1, len(covered)):
+                        pos_a, pos_b = covered[i], covered[j]
+                        a_mod = mm_status[pos_a]
+                        b_mod = mm_status[pos_b]
 
-            # Update contingency tables for each pair covered by this read
-            covered = sorted(mm_status.keys())
-            for i in range(len(covered)):
-                for j in range(i + 1, len(covered)):
-                    pos_a, pos_b = covered[i], covered[j]
-                    a_mod = mm_status[pos_a]
-                    b_mod = mm_status[pos_b]
-
-                    key = (trna_name, pos_a, pos_b)
-                    if a_mod and b_mod:
-                        contingency[key][0] += 1  # both modified
-                    elif a_mod and not b_mod:
-                        contingency[key][1] += 1  # A only
-                    elif not a_mod and b_mod:
-                        contingency[key][2] += 1  # B only
-                    else:
-                        contingency[key][3] += 1  # neither
+                        key = (trna_name, pos_a, pos_b)
+                        if a_mod and b_mod:
+                            contingency[key][0] += 1  # both modified
+                        elif a_mod and not b_mod:
+                            contingency[key][1] += 1  # A only
+                        elif not a_mod and b_mod:
+                            contingency[key][2] += 1  # B only
+                        else:
+                            contingency[key][3] += 1  # neither
 
         # Build results DataFrame
         return self._build_results(contingency)
