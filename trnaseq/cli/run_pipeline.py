@@ -85,6 +85,15 @@ try:
 except ImportError:
     QC_AVAILABLE = False
 
+# ReportContext is the provenance carrier threaded into every QC report.
+# Optional — older installs without trnaseq.qc._common still work.
+try:
+    from trnaseq.qc._common import ReportContext
+    REPORT_CONTEXT_AVAILABLE = True
+except ImportError:
+    ReportContext = None  # type: ignore[assignment,misc]
+    REPORT_CONTEXT_AVAILABLE = False
+
 try:
     from trnaseq.fragments import FragmentAnalyser
     FRAGMENTS_AVAILABLE = True
@@ -320,6 +329,38 @@ class PreprocessingPipeline:
         # Computing metrics
         self.stage_timings = {}
         self.file_metrics = {}
+
+    def _build_report_context(self):
+        """Construct a :class:`ReportContext` for the QC reports.
+
+        Built lazily on every call so ``runtime_seconds`` reflects the actual
+        elapsed time at report-generation time. Returns ``None`` when the
+        ``trnaseq.qc._common`` module is unavailable (older install).
+        """
+        if not REPORT_CONTEXT_AVAILABLE or ReportContext is None:
+            return None
+        sample_sheet = self.config.get('sample_list')
+        ref_db = None
+        tRNA_db = self.config.get('tRNA_database')
+        if isinstance(tRNA_db, dict):
+            # Pick the first species name as a label; harmless when empty.
+            keys = list(tRNA_db.keys())
+            if keys:
+                ref_db = ', '.join(str(k) for k in keys)
+        elif isinstance(tRNA_db, str):
+            ref_db = Path(tRNA_db).stem
+
+        start = self.status.get('start_time')
+        runtime = (datetime.now() - start).total_seconds() if start else None
+
+        return ReportContext.discover(
+            project_dir=self.project_dir,
+            config_path=self.config_file,
+            sample_sheet_path=sample_sheet if sample_sheet else None,
+            reference_db=ref_db,
+            runtime_seconds=runtime,
+            repo_root=repo_path,
+        )
 
     def _resolve_config_paths(self):
         """Resolve relative paths in config against project_dir.
@@ -1291,6 +1332,7 @@ class PreprocessingPipeline:
                             charge_summary=self.charge_summary_df,
                             sample_df=sample_df,
                             source_prefixes=source_prefixes,
+                            context=self._build_report_context(),
                         )
                         qc_dir = self.project_dir / 'qc_reports'
                         qc_dir.mkdir(parents=True, exist_ok=True)
@@ -1365,6 +1407,7 @@ class PreprocessingPipeline:
                             fragment_lengths_df=analyser._fragment_lengths if analyser._fragment_lengths is not None else pd.DataFrame(),
                             fragment_summary_df=summary if summary is not None else pd.DataFrame(),
                             sample_df=sample_df,
+                            context=self._build_report_context(),
                             coverage_df=coverage_df,
                             source_prefixes=source_prefixes,
                         )
@@ -1496,6 +1539,7 @@ class PreprocessingPipeline:
                 inp_file_df=inp_file_df,
                 charge_summary_df=charge_summary,
                 stats_df=stats_df,
+                context=self._build_report_context(),
                 bc_dir=self.project_dir / 'data' / 'BC_split',
             )
 
@@ -1805,6 +1849,7 @@ class PreprocessingPipeline:
                         consensus_calls=consensus_calls if not consensus_calls.empty else None,
                         replicate_groups=replicate_groups if replicate_groups else None,
                         ref_dict=extractor.ref_dict,
+                        context=self._build_report_context(),
                         summary_df=summary_df,
                         source_prefixes=source_prefixes,
                     )
@@ -1891,6 +1936,7 @@ class PreprocessingPipeline:
                         control_group=da.control_group,
                         level=level,
                         condition_map=da.condition_map,
+                        context=self._build_report_context(),
                     )
                     qc_dir = self.project_dir / 'qc_reports'
                     qc_dir.mkdir(parents=True, exist_ok=True)
