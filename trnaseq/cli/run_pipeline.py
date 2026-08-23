@@ -1164,7 +1164,15 @@ class PreprocessingPipeline:
             overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
             SWIPE_threads=self.threads_per_job,
         )
-        result_df = align_obj.run_parallel(n_jobs=self.n_jobs)
+        # realign_overwrite: False lets stage 1 reuse a finished *_SWalign.json.bz2 instead of
+        # realigning (the skip branch in SWIPE_align._start_SWIPE). Default True -- reuse is
+        # opt-in per run and recorded in the config, because the skip does NOT validate that the
+        # existing alignment was produced with the current reference, score matrix, or reads.
+        realign_overwrite = self.config.get('realign_overwrite', True)
+        if not realign_overwrite:
+            self.log("  realign_overwrite=False: reusing existing alignments where present",
+                     level="WARN")
+        result_df = align_obj.run_parallel(n_jobs=self.n_jobs, overwrite=realign_overwrite)
         if self.sample_index is not None:
             merge_cols = [c for c in result_df.columns if c not in self.sample_df.columns]
             if merge_cols:

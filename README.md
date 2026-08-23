@@ -136,7 +136,16 @@ seq_dir: "raw_fastq"
 tRNA_database:
   human: "/path/to/human-tRNAs.fa"
 SWIPE_score_mat: "/path/to/nuc_score-matrix_2.txt"
-common_seqs: null                      # Or path to common-seqs FASTA
+common_seqs: null                      # Or path to common-seqs FASTA.
+                                       # MUST be null for --sample-index (array) runs: it
+                                       # decompresses to a fixed path in the pipeline repo, so
+                                       # concurrent tasks race on one file, and _collect_stats
+                                       # then overwrites the real N_mapped with the common-seq
+                                       # count. Only set it if the FASTA actually matches your
+                                       # library -- check *_common-seq-obs.json is not all zeros.
+realign_overwrite: true                # false = stage 1 reuses an existing *_SWalign.json.bz2
+                                       # instead of realigning. Does NOT check the reference,
+                                       # score matrix, or reads still match -- opt in per run.
 
 # Read processing
 min_read_len: 39
