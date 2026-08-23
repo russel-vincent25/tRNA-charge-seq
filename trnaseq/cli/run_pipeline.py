@@ -1150,6 +1150,20 @@ class PreprocessingPipeline:
         # Setup alignment parameters
         SWIPE_score_mat = self.config['SWIPE_score_mat']
         common_seqs = self.config.get('common_seqs', None)
+
+        # common_seqs is not safe under --sample-index. _prep_common decompresses to a fixed
+        # path inside the installed package (utils/), and _start_SWIPE hardcodes the output
+        # name 'common-seqs' in the shared SWalign/ dir -- so concurrent array tasks race on
+        # one input file and one set of outputs. Whichever task finishes first removes the
+        # decompressed FASTA and the rest die on os.remove. Worse, _collect_stats then
+        # OVERWRITES the real per-sample N_mapped with the common-seq count, so a task that
+        # does survive reports a ~0% mapping rate and still exits 0.
+        if common_seqs is not None and self.sample_index is not None:
+            self.log("  WARNING: common_seqs is not supported with --sample-index (array mode) "
+                     "-- concurrent tasks share one decompressed file and one set of "
+                     "common-seqs outputs. Disabling it for this run.", level="WARN")
+            common_seqs = None
+
         MIN_SCORE_ALIGN = self.config.get('min_score_align', 15)
 
         # Run alignment

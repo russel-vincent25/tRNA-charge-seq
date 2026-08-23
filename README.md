@@ -137,7 +137,7 @@ tRNA_database:
   human: "/path/to/human-tRNAs.fa"
 SWIPE_score_mat: "/path/to/nuc_score-matrix_2.txt"
 common_seqs: null                      # Or path to common-seqs FASTA.
-                                       # MUST be null for --sample-index (array) runs: it
+                                       # Auto-disabled (with a WARN) under --sample-index: it
                                        # decompresses to a fixed path in the pipeline repo, so
                                        # concurrent tasks race on one file, and _collect_stats
                                        # then overwrites the real N_mapped with the common-seq
