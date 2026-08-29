@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# Stage 6 (Modification Analysis) — STANDALONE, high memory.
+#
+# Why this exists separately from stage2_6.job:
+#   Stage 6 reads the per-sample alignment JSONs in data/<align_dir> (stage 1 output),
+#   NOT the stage 2/3 aggregates. So it depends only on the stage 0c+1 array and can run
+#   in PARALLEL with the stage 2+3+4+5+7 aggregation job.
+#   Running it inside stage2_6.job puts it in that job's 32G budget, where PSCM extraction
+#   over a few hundred samples can OOM — taking stage 7 (DESeq2) down with it. Splitting it
+#   out means a modification-analysis OOM costs only the modification analysis.
+#
+# Usage:
+#   sbatch --dependency=afterok:<ARRAY_JOB_ID> stage6_mods.job <config.yaml> <project_dir>
+#
+# The config passed here should have run_modification_analysis: true and the other
+# run_* stage flags false, and the companion config used for the main chain should have
+# run_modification_analysis: false — otherwise stage 6 runs twice, once starved.
+# Stages 0-2 parameters MUST be identical between the two configs.
+#
+# Memory: 64G / 4 workers = 16G per worker. If it still OOMs, resubmit with
+#   sbatch --mem=64G ... and edit --n-jobs down to 2 (32G per worker).
+
+#SBATCH --cpus-per-task=4
+#SBATCH -p short
+#SBATCH -t 8:00:00
+#SBATCH --mem=64G
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=russel_vincent@hms.harvard.edu
+#SBATCH --job-name=tseq-mods
+#SBATCH -o /home/ruv988/jobOutput/tseq-mods_%j.out
+#SBATCH -e /home/ruv988/jobOutput/tseq-mods_%j.err
+
+set -euo pipefail
+
+CONFIG="${1:?Usage: sbatch --dependency=afterok:<ARRAY_JOB_ID> stage6_mods.job <config.yaml> <project_dir>}"
+PROJECT_DIR="${2:?Usage: sbatch --dependency=afterok:<ARRAY_JOB_ID> stage6_mods.job <config.yaml> <project_dir>}"
+
+echo "=== tRNA-charge-seq: Stage 6 (Modification Analysis, standalone) ==="
+echo "Config:  $CONFIG"
+echo "Project: $PROJECT_DIR"
+echo "Node:    $(hostname)"
+echo "CPUs:    ${SLURM_CPUS_PER_TASK:-4}"
+echo "Mem:     ${SLURM_MEM_PER_NODE:-unset} MB"
+echo "Start:   $(date)"
+echo ""
+
+# Load modules and activate conda environment
+module load conda/miniforge3/24.11.3-0
+conda activate tRNA-seq
+export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6
+
+python -m trnaseq pipeline \
+    --config "$CONFIG" \
+    --project-dir "$PROJECT_DIR" \
+    --n-jobs "${SLURM_CPUS_PER_TASK:-4}" \
+    --stages 6
+
+if [ $? -ne 0 ]; then
+    echo "Error: Stage 6 (modification analysis) failed" >&2
+    exit 1
+fi
+
+echo ""
+echo "Done: $(date)"
