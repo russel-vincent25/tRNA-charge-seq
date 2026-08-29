@@ -89,10 +89,10 @@ TIME_0AB=$(printf "%02d:%02d:00" $((TIME_0AB_MIN / 60)) $((TIME_0AB_MIN % 60)))
 MEM_0AB="4G"
 
 # Stage 0c+1: per-sample array; SWIPE is I/O-bound (~50% CPU efficiency)
-# 2 CPUs sufficient; RAM peaks at ~1GB even for large samples
+# 2 CPUs sufficient; RAM peaks at ~2GB even for large samples - so let's keep it at 4G per cpu for safety.
 CPUS_0C1=2
 TIME_0C1="08:00:00"
-MEM_0C1="2G"
+MEM_0C1="8G"
 
 # Stage 2+3+4+5+6+7: aggregation; I/O-bound (reading JSONs, writing CSVs)
 # 42 min for 24 samples with 4 CPUs → scales ~linearly with N_SAMPLES/CPUS
