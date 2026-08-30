@@ -130,10 +130,13 @@ class TestAbundanceReportGenerator:
         out = tmp_path / 'abundance_report.html'
         gen.generate_html_report(out)
         content = out.read_text()
+        assert 'PCA' in content
         assert 'Volcano Plot' in content
         assert 'MA Plot' in content
-        assert 'Top Differentially Expressed' in content
-        assert 'PCA' in content
+        # The top-DE table and correlation matrix were removed in the dashboard
+        # overhaul (commit 5c9e122) and replaced by these two panels.
+        assert 'Top Variable Features' in content
+        assert 'RPM Distribution' in content
 
     def test_empty_results(self, tmp_path):
         from trnaseq.qc.abundance_report import AbundanceReportGenerator

@@ -23,8 +23,14 @@ class TestFragmentReportGenerator:
         fragment_counts = pd.DataFrame({
             'sample_name_unique': ['s1', 's1', 's2', 's2'],
             'tRNA_annotation': ['tRNA-Ala-AGC-1', 'tRNA-Gly-GCC-1'] * 2,
+            'amino_acid': ['Ala', 'Gly'] * 2,
             'total_reads': [1000, 800, 1200, 600],
             'integrity_score': [0.85, 0.72, 0.90, 0.65],
+            # frac_* columns drive the fragment-composition panel; each row sums to 1.
+            'frac_full_length': [0.65, 0.55, 0.70, 0.50],
+            'frac_rt_dropoff': [0.20, 0.25, 0.18, 0.30],
+            'frac_5p_tRF': [0.10, 0.12, 0.08, 0.13],
+            'frac_degraded': [0.05, 0.08, 0.04, 0.07],
         })
 
         rt_dropoff = pd.DataFrame({
@@ -91,24 +97,47 @@ class TestFragmentReportGenerator:
         content = Path(result).read_text()
         assert 'tRNA Fragment Dashboard' in content
 
-    def test_all_panels_present(self, fragment_data, tmp_path):
+    def test_all_panels_present(self, fragment_data, coverage_data, tmp_path):
+        """Every panel in the current dashboard renders when fully fed.
+
+        The RT drop-off profile and fragment length distribution panels were
+        deliberately removed in the dashboard overhaul (commit 5c9e122), so
+        they are not asserted here.
+        """
         from trnaseq.qc.fragment_report import FragmentReportGenerator
         counts, rt, lengths, summary, sample_df = fragment_data
 
+        syn_rows = pd.DataFrame({
+            'sample_name_unique': ['s1', 's2'],
+            'tRNA_annotation': ['Synthetic_tRNA-Lys-CUU-1'] * 2,
+            'amino_acid': ['Lys'] * 2,
+            'total_reads': [500, 400],
+            'integrity_score': [0.95, 0.93],
+            'frac_full_length': [0.90, 0.88],
+            'frac_rt_dropoff': [0.06, 0.07],
+            'frac_5p_tRF': [0.03, 0.03],
+            'frac_degraded': [0.01, 0.02],
+        })
+        counts_with_syn = pd.concat([counts, syn_rows], ignore_index=True)
+
         gen = FragmentReportGenerator(
-            fragment_counts_df=counts,
+            fragment_counts_df=counts_with_syn,
             rt_dropoff_df=rt,
             fragment_lengths_df=lengths,
             fragment_summary_df=summary,
             sample_df=sample_df,
+            coverage_df=coverage_data,
+            source_prefixes={'Synthetic_': 'synthetic'},
         )
         out = tmp_path / 'fragment_report.html'
         gen.generate_html_report(out)
         content = out.read_text()
         assert 'Fragment Types' in content
-        assert 'Integrity Heatmap' in content
-        assert 'RT Drop-off Profile' in content
-        assert 'Fragment Length Distribution' in content
+        assert 'Fragment Composition by tRNA' in content
+        assert 'Integrity by Amino Acid' in content
+        assert 'Behrens Coverage Plot' in content
+        assert 'Needle Coverage Plot' in content
+        assert 'Synthetic Control Integrity' in content
 
     def test_empty_data(self, tmp_path):
         from trnaseq.qc.fragment_report import FragmentReportGenerator
