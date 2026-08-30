@@ -96,12 +96,22 @@ MEM_0C1="8G"
 
 # Stage 2+3+4+5+6+7: aggregation; I/O-bound (reading JSONs, writing CSVs)
 # 42 min for 24 samples with 4 CPUs → scales ~linearly with N_SAMPLES/CPUS
-# 16 CPUs keeps 264 samples under 4h; RAM scales with sample count
 CPUS_2356=16
-MEM_2356="$(( CPUS_2356 * 2 ))G"   # 2 GB per worker — stats collection is RAM-greedy
-# ~1.75 min per sample per CPU for stats/charge/QC, plus ~30 min fixed
-# overhead for modification analysis (PSCM + crosstalk). Min 2h, cap 12h.
-TIME_2356_MIN=$(( (N_SAMPLES * 2 / CPUS_2356 + 1) * 3 + 30 ))
+# RAM is a RATCHET, not a spike: mpire workers are long-lived and reused, so
+# each retains the RSS high-water of the deepest sample it has handled and the
+# sum across workers only climbs. Per-worker high-water tracks SAMPLE DEPTH,
+# not CPU count, so raising CPUS_2356 adds ratchets and makes OOM MORE likely
+# — scale memory with it, never treat more CPUs as a memory fix.
+# Job 51712814 died at 29.30 GB of 32 GB (16 workers, 1.83 GB avg) around
+# sample 149 of 264. _collect_stats is chunked as of a525374, which caps the
+# per-chunk peak, but the ratchet across reused workers remains.
+MEM_2356="$(( CPUS_2356 * 4 ))G"   # 4 GB per worker — headroom over the observed 1.83 GB ratchet
+# Time: stage 2 parallelises (~7 CPU-min per sample), but stages 3 and 6 read
+# per-sample CSVs/JSONs sequentially (~2.4h and ~2h respectively at 264
+# samples ≈ 1 min per sample combined), plus ~60 min fixed overhead for QC and
+# crosstalk. The old formula assumed everything parallelised and under-called
+# a 264-sample run by ~3x. Min 2h, cap 12h (O2 `short` partition).
+TIME_2356_MIN=$(( N_SAMPLES * 7 / CPUS_2356 + N_SAMPLES + 60 ))
 if [ $TIME_2356_MIN -lt 120 ]; then TIME_2356_MIN=120; fi
 if [ $TIME_2356_MIN -gt 720 ]; then TIME_2356_MIN=720; fi
 TIME_2356=$(printf "%02d:%02d:00" $((TIME_2356_MIN / 60)) $((TIME_2356_MIN % 60)))
