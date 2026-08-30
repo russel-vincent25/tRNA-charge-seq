@@ -1,3 +1,34 @@
+"""
+Collect per-read alignment statistics and aggregate them per sample.
+
+Stage 2 memory
+--------------
+``_collect_stats`` re-reads each sample's per-read stats CSV to build the
+aggregate. Read whole, that CSV materialises one row per aligned read (28
+columns, 14 of them object-dtype strings), so a worker's peak RSS is set by
+the depth of the deepest sample it has handled.
+
+mpire workers are long-lived and are reused across samples, so that
+high-water mark ratchets upward and never comes back down. Total job memory
+is therefore the *sum* of per-worker high-waters, and that sum only ever
+climbs. This is a ratchet, not a spike: a 264-sample run has been observed to
+cross a 32 GB cgroup limit partway through at well under 2 GB average per
+worker across 16 workers, with no single worker ever holding tens of GB.
+
+Two consequences when sizing ``hpc/slurm/submit_pipeline.sh``:
+
+  - Adding workers makes this worse, not better. Each additional worker is
+    another independent ratchet contributing to the sum.
+  - Scaling memory with CPU count (``MEM_2356 = CPUS_2356 * 2``) cannot fix
+    it either, because per-worker high-water is set by sample depth rather
+    than by CPU count.
+
+Reading in ``stats_chunksize`` slices bounds each worker's high-water to
+roughly one chunk regardless of sample depth, which flattens the ratchet at
+its source. See the commit that introduced the chunking for the seff figures
+from the run that motivated it.
+"""
+
 import os, shutil, bz2, warnings, json, gc
 import json_stream
 from Bio import SeqIO
@@ -18,11 +49,12 @@ class STATS_collection:
     overwrite_dir -- Overwrite old stats folder if any exists (default False)
     check_exists -- Check if input files exist (default True)
     reads_SW_sorted -- Assume reads and SW results are sorted in the same order. This gives a massive memory saving. (default True)
+    stats_chunksize -- Number of rows per chunk when re-reading the per-read stats CSV for aggregation. Peak memory of the aggregation step is one chunk rather than the whole file, so this keeps memory flat in sequencing depth. (default 500000)
     from_UMIdir -- Is the input data from a folder made with the UMI_trim class? (default True)
     '''
     def __init__(self, dir_dict, tRNA_data, sample_df, common_seqs=None, \
                  ignore_common_count=False, check_exists=True, overwrite_dir=False, \
-                 reads_SW_sorted=True, from_UMIdir=True):
+                 reads_SW_sorted=True, stats_chunksize=500000, from_UMIdir=True):
         self.stats_csv_header = ['readID', 'common_seq', 'sample_name_unique', \
                                  'sample_name', 'replicate', 'barcode', 'species', 'tRNA_annotation', \
                                  'align_score', 'fmax_score', 'Ndeletions', 'Ninsertions', \
@@ -49,6 +81,7 @@ class STATS_collection:
         self.common_seqs_fnam = common_seqs
         self.common_seqs_info = dict() # Name to sequence for common sequence
         self.reads_SW_sorted = reads_SW_sorted
+        self.stats_chunksize = stats_chunksize
         self.from_UMIdir = from_UMIdir
 
         # Check files exists before starting:
@@ -166,29 +199,54 @@ class STATS_collection:
             if not self.common_seqs_fnam is None:
                 self._read_common(row, stats_fh)
 
-        # Filter data and aggregate to count charged/uncharged tRNAs
-        # Read stats from stats CSV file:
+        # Filter data and aggregate to count charged/uncharged tRNAs.
+        # Read stats from stats CSV file in chunks: a whole-file read materialises
+        # one row per aligned read (28 columns, 14 of them object-dtype strings),
+        # so a worker's peak RSS is set by the depth of the deepest sample it has
+        # handled. Because mpire workers are long-lived and reused, that high-water
+        # mark ratchets upward and never comes back down -- see the module
+        # docstring for the sizing consequences. Chunking bounds the high-water to
+        # roughly one chunk; the per-chunk partial aggregates are bounded by the
+        # number of unique key combinations, not by read count.
+        fragment_counts = {
+            'N_full_length': 0,
+            'N_rt_dropoff': 0,
+            'N_5p_fragment': 0,
+            'N_degraded': 0,
+            'N_total_aligned': 0,
+        }
+        agg_partials = list()
         with bz2.open(stats_fnam, 'rt') as stats_fh:
             # Use "keep_default_na=False" to read an empty string
             # as an empty string and not as NaN.
-            stat_df = pd.read_csv(stats_fh, keep_default_na=False, dtype=self.stats_csv_header_td)
+            for stat_df in pd.read_csv(stats_fh, keep_default_na=False, \
+                                       dtype=self.stats_csv_header_td, \
+                                       chunksize=self.stats_chunksize):
+                # Compute fragment counts BEFORE the 3p_cover filter
+                ct = stat_df['count']
+                _5p = stat_df['5p_cover'].astype(bool)
+                _3p = stat_df['3p_cover'].astype(bool)
+                fragment_counts['N_full_length'] += int(ct[_5p & _3p].sum())
+                fragment_counts['N_rt_dropoff'] += int(ct[~_5p & _3p].sum())
+                fragment_counts['N_5p_fragment'] += int(ct[_5p & ~_3p].sum())
+                fragment_counts['N_degraded'] += int(ct[~_5p & ~_3p].sum())
+                fragment_counts['N_total_aligned'] += int(ct.sum())
 
-        # Compute fragment counts BEFORE the 3p_cover filter
-        ct = stat_df['count']
-        _5p = stat_df['5p_cover'].astype(bool)
-        _3p = stat_df['3p_cover'].astype(bool)
-        fragment_counts = {
-            'N_full_length': int(ct[_5p & _3p].sum()),
-            'N_rt_dropoff': int(ct[~_5p & _3p].sum()),
-            'N_5p_fragment': int(ct[_5p & ~_3p].sum()),
-            'N_degraded': int(ct[~_5p & ~_3p].sum()),
-            'N_total_aligned': int(ct.sum()),
-        }
+                # Aggregate this chunk:
+                # Here: also filter sequences with long 5p_non-temp sequences (these are likely template switch products)
+                row_mask = (stat_df['3p_cover']) & (stat_df['3p_non-temp'] == '')
+                agg_partials.append(stat_df[row_mask].groupby(self.stats_agg_cols[:-1], as_index=False).agg({"count": "sum"}))
+                del stat_df, ct, _5p, _3p, row_mask
 
-        # Aggregate dataframe and write as CSV file:
-        # Here: also filter sequences with long 5p_non-temp sequences (these are likely template switch products)
-        row_mask = (stat_df['3p_cover']) & (stat_df['3p_non-temp'] == '')
-        agg_df = stat_df[row_mask].groupby(self.stats_agg_cols[:-1], as_index=False).agg({"count": "sum"})
+        # Merge the partials: a key combination can be split across chunk
+        # boundaries, so re-run the same groupby-sum over the concatenation.
+        if agg_partials:
+            agg_df = pd.concat(agg_partials, ignore_index=True)
+            del agg_partials
+            agg_df = agg_df.groupby(self.stats_agg_cols[:-1], as_index=False).agg({"count": "sum"})
+        else:
+            # Header-only stats CSV: still write a correctly headed empty file.
+            agg_df = pd.DataFrame(columns=self.stats_agg_cols)
         agg_df.to_csv(stats_agg_fnam, header=True, index=False)
 
         return({
