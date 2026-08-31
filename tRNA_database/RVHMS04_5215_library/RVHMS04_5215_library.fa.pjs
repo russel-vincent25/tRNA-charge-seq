@@ -1,0 +1,18 @@
+{
+  "version": "1.2",
+  "dbname": "RVHMS04_5215_library.fa",
+  "dbtype": "Protein",
+  "db-version": 4,
+  "description": "RVHMS04_5215_library.fa",
+  "number-of-letters": 409328,
+  "number-of-sequences": 5216,
+  "last-updated": "2026-08-31T13:59:00",
+  "number-of-volumes": 1,
+  "bytes-total": 943110,
+  "bytes-to-cache": 456361,
+  "files": [
+    "RVHMS04_5215_library.fa.phr",
+    "RVHMS04_5215_library.fa.pin",
+    "RVHMS04_5215_library.fa.psq"
+  ]
+}
