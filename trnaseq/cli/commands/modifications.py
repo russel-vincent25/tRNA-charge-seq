@@ -31,6 +31,9 @@ def add_modifications_parser(subparsers):
                         help='Path to sample_df.xlsx (optional; auto-detects samples if omitted)')
     parser.add_argument('--output-dir', '-o', required=True,
                         help='Output directory for results')
+    parser.add_argument('--unmasked-reference', default=None,
+                        help='Unmasked FASTA matching an N-masked --reference '
+                             '(e.g. tRNA_database/human/hg38-tRNAs.fa)')
     parser.add_argument('--organism', default='Escherichia coli',
                         help='Organism name for MODOMICS lookup (default: "Escherichia coli")')
     parser.add_argument('--min-coverage', type=int, default=50,
@@ -58,7 +61,7 @@ def run_modifications(args):
     import pandas as pd
 
     # Import our modules
-    from trnaseq.modifications.positional import PositionalExtractor
+    from trnaseq.modifications.positional import PositionalExtractor, unmask_reference
     from trnaseq.modifications.modomics import MODOMICSAnnotator
     from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
     from trnaseq.modifications.modification_caller import (
@@ -102,6 +105,12 @@ def run_modifications(args):
     print("\nExtracting per-position count matrices...")
     extractor = PositionalExtractor(args.reference)
     all_pscm = extractor.run_parallel(json_dir, sample_names, n_jobs=args.n_jobs)
+    if args.unmasked_reference:
+        restored = unmask_reference(extractor.ref_dict, args.unmasked_reference)
+        print(f"Restored {restored} masked reference bases from {args.unmasked_reference}")
+    elif any('N' in i['seq'].upper() for i in extractor.ref_dict.values()):
+        print("WARNING: reference has N-masked bases and no --unmasked-reference; "
+              "substitutions are not measured at those positions")
 
     # Step 3: Load MODOMICS
     print("\nLoading modification database...")
@@ -118,6 +127,9 @@ def run_modifications(args):
         verbose=False
     )
     analyzer.load_reference(args.reference)
+    for name, info in analyzer.reference_sequences.items():
+        if name in extractor.ref_dict:
+            info['seq'] = extractor.ref_dict[name]['seq']
 
     per_sample_calls = {}
     known_by_trna = {}

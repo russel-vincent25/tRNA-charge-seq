@@ -101,7 +101,7 @@ except ImportError:
     FRAGMENTS_AVAILABLE = False
 
 try:
-    from trnaseq.modifications.positional import PositionalExtractor
+    from trnaseq.modifications.positional import PositionalExtractor, unmask_reference
     from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
     from trnaseq.modifications.modification_caller import (
         CHANNELS,
@@ -244,7 +244,8 @@ class PreflightReport:
 # ------------------------------------------------------------------
 # Path fields in config that should be resolved relative to project_dir
 # ------------------------------------------------------------------
-_PATH_FIELDS = ['sample_list', 'index_list', 'SWIPE_score_mat', 'common_seqs', 'adapter_sequences']
+_PATH_FIELDS = ['sample_list', 'index_list', 'SWIPE_score_mat', 'common_seqs', 'adapter_sequences',
+                'unmasked_reference']
 _DICT_PATH_FIELDS = ['tRNA_database']  # dict values are paths
 
 
@@ -1635,6 +1636,20 @@ class PreprocessingPipeline:
                 json_dir, sample_names, n_jobs=self.n_jobs
             )
 
+            # Masked references: restore the real bases so substitutions at
+            # masked positions are measured instead of read as 100% mismatch
+            n_masked = sum(i['seq'].upper().count('N') for i in extractor.ref_dict.values())
+            if n_masked:
+                unmasked_ref = self.config.get('unmasked_reference')
+                if unmasked_ref:
+                    restored = unmask_reference(extractor.ref_dict, unmasked_ref)
+                    self.log(f"  Restored {restored}/{n_masked} masked reference bases "
+                             f"from {unmasked_ref}")
+                else:
+                    self.log(f"  WARNING: reference has {n_masked} N-masked bases and no "
+                             f"'unmasked_reference' is set; substitutions are not measured "
+                             f"at those positions", level="WARN")
+
             # ==== Phase 2: Background estimation ====
             # One beta-binomial null per channel per sample: null rates and
             # overdispersion differ by channel, depth and batch.
@@ -1666,6 +1681,9 @@ class PreprocessingPipeline:
                 min_coverage=min_coverage, verbose=False
             )
             analyzer.load_reference(ref_fasta)
+            for name, info in analyzer.reference_sequences.items():
+                if name in extractor.ref_dict:
+                    info['seq'] = extractor.ref_dict[name]['seq']
             def make_caller(backgrounds):
                 return ModificationCaller(
                     organism=organism,

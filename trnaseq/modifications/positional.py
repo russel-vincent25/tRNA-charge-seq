@@ -53,6 +53,45 @@ def _load_reference(fasta_path: Union[str, Path]) -> Dict[str, dict]:
     return ref_dict
 
 
+def unmask_reference(
+    ref_dict: Dict[str, dict],
+    unmasked_fasta: Union[str, Path],
+) -> int:
+    """Restore N-masked reference bases from the unmasked FASTA, in place.
+
+    Masked databases (e.g. ``tRNA_database_masked``) replace isodecoder-
+    discriminating bases with N to improve alignment specificity. Reads
+    still carry the real base there, so a substitution rate computed against
+    N counts every read as a mismatch. The unmasked FASTA must use the same
+    names and lengths and agree at every unmasked base.
+
+    Returns:
+        Number of bases restored.
+
+    Raises:
+        ValueError: If a reference differs in length or at an unmasked base,
+            i.e. the FASTA is not the unmasked counterpart.
+    """
+    unmasked = _load_reference(unmasked_fasta)
+    restored = 0
+    for name, info in ref_dict.items():
+        seq = info['seq']
+        if 'N' not in seq.upper():
+            continue
+        if name not in unmasked:
+            warnings.warn(f"'{name}' has masked bases but is not in {unmasked_fasta}; "
+                          f"substitutions at its N positions will not be measured.")
+            continue
+        full = unmasked[name]['seq']
+        if len(full) != len(seq) or any(
+                m.upper() != u.upper() for m, u in zip(seq, full) if m.upper() != 'N'):
+            raise ValueError(f"{unmasked_fasta} is not the unmasked counterpart of the "
+                             f"reference: '{name}' differs outside masked positions")
+        restored += sum(1 for m, u in zip(seq, full) if m.upper() == 'N' and u.upper() != 'N')
+        info['seq'] = full
+    return restored
+
+
 def _parse_anticodon_from_name(trna_name: str) -> Optional[str]:
     """Extract anticodon from tRNA name using the standard naming convention.
 

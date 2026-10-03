@@ -107,6 +107,7 @@ Single-read Analysis of Crosstalks (SLAC) following Behrens et al. 2023 (NAR):
 run_modification_analysis: true
 organism: "ecoli"           # ecoli, human, or mouse
 no_modomics: false          # Set true to skip MODOMICS lookup
+unmasked_reference: null    # unmasked FASTA when tRNA_database is N-masked
 rt_enzyme: null             # RT used: Maxima, SSIV, TGIRT, Indura (null = unknown)
 rt_temp: null               # RT temperature in C (null = unknown)
 discover_novel_modifications: true # deprecated, ignored

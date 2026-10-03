@@ -2,7 +2,7 @@
 
 **Status (2026-10-03):** detection (change 4, §1–§5), site identity (change 4b, §6–§7) and the
 novel-site lookup fixes and table (§8) are implemented. The novel-site predictor (§9) is a
-prototype. The N-masked-reference bug (§8) is open. Changes 5–6 are not started.
+prototype. The N-masked-reference fix (§8) is done. Change 5 is in progress; change 6 is not started.
 
 Evidence comes from the 2024-06-19 four-RT run (4 enzymes × 3 temperatures × 3 replicates,
 `ecoli.fa`, 49 references). Only `mismatch_profile.parquet` and `rt_profile.parquet` were used:
@@ -303,15 +303,31 @@ The modification report has a matching **Novel Sites** panel. On the four-RT run
   map.
 - **Single TGIRT RT stops** at about 120× coverage, probably noise.
 
-**Pre-existing bug found, not fixed: N-masked references.** `RTSignatureAnalyzer` computes the
-substitution rate against an `N` reference base, so every read counts as a mismatch. On the human
-example (`tRNA_database_masked`, 533 masked bases), **1,754 of 3,115 calls (56%) sit on masked
-bases at mismatch ≈ 1.0**. HEAD does the same. The four-RT run (`ecoli.fa`, unmasked) is not
-affected. The substitution channel is undefined at a masked base. Options:
+**N-masked references: fixed with option (b).** `RTSignatureAnalyzer` computed the substitution
+rate against an `N` reference base, so every read counted as a mismatch. On the human example
+(`tRNA_database_masked`, 533 masked bases), 1,754 of 3,115 calls sat on masked bases at
+mismatch ≈ 1.0. HEAD does the same.
 
-- **(a) Exclude it.** Deletion and RT stop still apply. This matches `compute_mismatch_profile`,
-  which already reports 0 at N.
-- **(b) Use the unmasked reference.** Recover the base from it so the rate can be measured.
+**The signal at masked bases is mostly real.** The masked positions are 57% A and 37% G, and 242
+of 512 coincide with a MODOMICS modification: m1A 89, m22G 38, I 25, m1I 20, m1G 17. These are
+misincorporating modifications, masked because they disrupt mapping. Unmasked positions read
+99.9% correctly. What was wrong was the measurement, not the detection.
+
+**Fix:**
+
+- **Restore the bases.** A new `unmasked_reference` config key (CLI `--unmasked-reference`) names
+  the unmasked FASTA. `positional.unmask_reference` checks it has the same names and lengths and
+  agrees at every unmasked base, then restores the masked bases before any rate is computed.
+- **Fallback.** Without an unmasked reference, substitutions are not measured at N (deletion and
+  RT stop still are), and stage 6 warns.
+
+**Result on the human example:**
+
+- All 533 bases restored; calls 3,115 → 3,113.
+- Masked-base calls are now at their real rate (median 0.87).
+- 778 of them are labelled: m1A 307, m22G 128, m1I 77, I 71, m1G 69.
+- The 898 still novel are dominated by A→G and A→T, the inosine/m1I and m1A signatures, in tRNAs
+  that MODOMICS's 42 human sequences don't cover.
 
 ## 9. Novel-site prediction (prototype, not in the pipeline)
 

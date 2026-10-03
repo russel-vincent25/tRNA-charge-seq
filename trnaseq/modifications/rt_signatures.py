@@ -215,8 +215,15 @@ class RTSignatureAnalyzer:
             if correct_nt not in self.char_dict:
                 continue
 
-            correct_count = pscm_df.loc[pos, correct_nt]
-            mismatch_count = coverage[pos] - correct_count - gap_counts[pos]
+            if correct_nt == 'N':
+                # Masked reference base: no base to compare reads against, so
+                # substitutions are not measured here (deletions and RT stops
+                # still are). Restore it with positional.unmask_reference.
+                correct_count = np.nan
+                mismatch_count = 0
+            else:
+                correct_count = pscm_df.loc[pos, correct_nt]
+                mismatch_count = coverage[pos] - correct_count - gap_counts[pos]
             mismatch_rate = mismatch_count / coverage[pos]
 
             results.append({
