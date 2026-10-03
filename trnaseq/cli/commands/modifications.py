@@ -173,6 +173,7 @@ def run_modifications(args):
         # Modification calling (FDR over all site x channel tests in the sample)
         all_mod_calls = []
         n_tests = 0
+        ac_positions = extractor._autodetect_anticodon_positions(list(pscm_dfs))
         for trna_name, pscm_df in pscm_dfs.items():
             raw_mat = pscm_dict.get(trna_name)
             rt_stops = raw_mat[:, 7] if raw_mat is not None else None
@@ -181,16 +182,24 @@ def run_modifications(args):
                 trna_name, pscm_df, rt_stop_counts=rt_stops
             )
 
-            # Annotate with MODOMICS
-            annotated = annotator.annotate_signatures(
-                analysis['signatures'], trna_name
-            )
-
+            # Known modifications in this reference's linear coordinates
+            # (MODOMICS sequence aligned to the reference), as in stage 6
             ref_seq = analyzer.reference_sequences.get(trna_name, {}).get('seq')
+            ac_pos = ac_positions.get(trna_name)
+            ac_start = ac_pos[0] if ac_pos is not None else None
+            annotated = annotator.annotate_signatures(
+                analysis['signatures'], trna_name,
+                ref_seq=ref_seq, anticodon_linear_start=ac_start,
+            )
+            known_mods = (annotator.get_known_mods_linear(
+                trna_name, ref_seq, anticodon_linear_start=ac_start)
+                if ref_seq else None)
+
             mod_calls = caller.call_all(
                 trna_name, annotated, pscm_df, ref_seq,
                 discover_novel=args.discover_novel,
                 min_coverage=args.min_coverage,
+                known_mods_df=known_mods,
                 finalize=False,
             )
             n_tests += caller.count_tests(annotated, args.min_coverage)

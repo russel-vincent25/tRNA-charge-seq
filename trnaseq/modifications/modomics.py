@@ -964,8 +964,11 @@ class MODOMICSAnnotator:
         }
         known_subset = known_subset.rename(columns=rename)
 
-        # Ensure position dtype matches
+        # Ensure position dtype matches. Raw Sprinzl labels such as '20a'
+        # have no integer equivalent and cannot be merged without a mapping.
         result['position'] = result['position'].astype(int)
+        known_subset['position'] = pd.to_numeric(known_subset['position'], errors='coerce')
+        known_subset = known_subset.dropna(subset=['position'])
         known_subset['position'] = known_subset['position'].astype(int)
 
         # Left merge

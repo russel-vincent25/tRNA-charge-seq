@@ -157,11 +157,13 @@ class TestSiteLevelOutput:
     def test_one_row_per_site_with_ranked_candidates(self):
         calls = _caller().call_all('t', _signatures({46: {'mismatch_rate': 0.3}}))
         assert len(calls) == 1
-        row = calls.iloc[0]
-        assert row['modification'] == 'm7G'           # typical position 46
-        assert row['identity_support'] == 'position'
-        assert row['candidates'].split(';')[0] == 'm7G'
-        assert row['n_candidates'] > 1
+        assert calls.iloc[0]['n_candidates'] > 1
+
+    def test_sprinzl_typical_position_not_used_as_linear(self):
+        # m7G is canonically Sprinzl 46; linear 46 alone must not label it
+        row = _caller().call_all('t', _signatures({46: {'mismatch_rate': 0.3}})).iloc[0]
+        assert row['modification'] == 'novel_candidate'
+        assert not row['in_typical_position']
 
     def test_unsupported_identity_is_novel_but_still_called(self):
         calls = _caller().call_all('t', _signatures({100: {'gap_rate': 0.3}}))
@@ -185,6 +187,79 @@ class TestSiteLevelOutput:
         final = caller.finalize_calls(raw, caller.count_tests(sig, 50))
         assert final.equals(caller.call_all('t', sig))
         assert not any(c.startswith(('gate_', 'rate_')) for c in final.columns)
+
+
+def _known(*pos_names):
+    return pd.DataFrame([{'linear_position': p, 'modification_short_name': n}
+                         for p, n in pos_names])
+
+
+class TestSiteIdentity:
+    """MODOMICS-first identity at the base the signal implicates."""
+
+    def test_modomics_labels_substitution_site(self):
+        row = _caller().call_all('t', _signatures({47: {'mismatch_rate': 0.3}}),
+                                 known_mods_df=_known((47, 'acp3U'))).iloc[0]
+        assert row['modification'] == 'acp3U'
+        assert row['source'] == 'known_modomics'
+        assert row['identity_support'] == 'modomics'
+        assert row['modified_position'] == 47
+        assert row['candidates'].split(';')[0] == 'acp3U'
+
+    def test_rt_stop_implicates_base_5prime_of_stop(self):
+        # Stop recorded at 38; m1G is at 37
+        row = _caller().call_all('t', _signatures({38: {'rt_stop_pct': 50.0}}),
+                                 known_mods_df=_known((37, 'm1G'))).iloc[0]
+        assert row['position'] == 38
+        assert row['modification'] == 'm1G'
+        assert row['modified_position'] == 37
+
+    def test_rt_stop_prefers_preceding_base_when_both_modified(self):
+        row = _caller().call_all('t', _signatures({47: {'rt_stop_pct': 50.0}}),
+                                 known_mods_df=_known((46, 'm7G'), (47, 'acp3U'))).iloc[0]
+        assert row['modification'] == 'm7G'
+        assert row['candidates'].split(';')[:2] == ['m7G', 'acp3U']
+
+    def test_deletion_prefers_same_base_then_preceding(self):
+        same = _caller().call_all('t', _signatures({47: {'gap_rate': 0.3}}),
+                                  known_mods_df=_known((46, 'm7G'), (47, 'acp3U'))).iloc[0]
+        prev = _caller().call_all('t', _signatures({47: {'gap_rate': 0.3}}),
+                                  known_mods_df=_known((46, 'm7G'))).iloc[0]
+        assert same['modification'] == 'acp3U'
+        assert prev['modification'] == 'm7G' and prev['modified_position'] == 46
+
+    def test_substitution_does_not_borrow_neighbouring_mod(self):
+        row = _caller().call_all('t', _signatures({48: {'mismatch_rate': 0.3}}),
+                                 known_mods_df=_known((47, 'acp3U'))).iloc[0]
+        assert row['source'] == 'novel_candidate'
+
+    def test_specific_pattern_labels_without_modomics(self):
+        # C->T dominant substitution at a C: m3C (C->T, weight 1.2) ranks first
+        sig = _signatures({100: {'mismatch_rate': 0.3, 'correct_nt': 'C'}})
+        pscm = pd.DataFrame(0, index=range(150), columns=list('ACGTUN-'))
+        pscm.loc[99, ['C', 'T']] = [1400, 600]
+        row = _caller().call_all('t', sig, pscm_df=pscm).iloc[0]
+        assert row['source'] == 'known'
+        assert row['identity_support'] == 'pattern'
+        assert row['modification'] == 'm3C'
+
+    def test_modomics_overrides_pattern_label(self):
+        sig = _signatures({100: {'mismatch_rate': 0.3, 'correct_nt': 'C'}})
+        pscm = pd.DataFrame(0, index=range(150), columns=list('ACGTUN-'))
+        pscm.loc[99, ['C', 'T']] = [1400, 600]
+        row = _caller().call_all('t', sig, pscm_df=pscm,
+                                 known_mods_df=_known((100, 'ac4C'))).iloc[0]
+        assert row['modification'] == 'ac4C'
+        assert 'm3C' in row['candidates'].split(';')
+
+    def test_identity_never_changes_detection(self):
+        sig = _signatures({38: {'rt_stop_pct': 50.0}, 100: {'gap_rate': 0.3}})
+        with_map = _caller().call_all('t', sig, known_mods_df=_known((37, 'm1G')))
+        without = _caller().call_all('t', sig)
+        no_priors = _caller(use_position_priors=False).call_all(
+            't', sig, known_mods_df=_known((37, 'm1G')))
+        assert set(with_map['position']) == set(without['position']) == {38, 100}
+        assert (no_priors['source'] == 'novel_candidate').all()
 
 
 def test_analyzer_mismatch_rate_excludes_deletions():

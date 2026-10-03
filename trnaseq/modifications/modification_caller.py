@@ -56,6 +56,19 @@ _RATE_SOURCE = {
     'rt_stop': ('rt_stop_pct', 0.01),
 }
 
+# Offsets from an observed signal to the modified base, most likely first.
+# Measured on the four-RT run against MODOMICS-mapped modifications: a
+# substitution sits on the modified base; a deletion on it, else 1 nt 3';
+# an RT stop is recorded 1 nt 3' of it (5:1 over the base itself).
+_IMPLICATED_OFFSETS = {
+    'mismatch': (0,),
+    'deletion': (0, -1),
+    'rt_stop': (-1, 0),
+}
+
+# Profile names that MODOMICS spells differently
+_MOD_ALIASES = {'Ψ': 'Psi'}
+
 # A fired channel whose prior weight is below this is 'unexpected' for the enzyme
 UNEXPECTED_CHANNEL_WEIGHT = 0.10
 
@@ -70,7 +83,10 @@ class ModificationProfile:
     Attributes:
         name: Modification name (e.g., 'm1A')
         full_name: Full chemical name
-        typical_positions: Common positions where this modification occurs
+        typical_positions: Canonical Sprinzl positions, for reference only.
+            They are not compared with linear reference positions (the two
+            differ by tRNA); position evidence comes from MODOMICS mapped by
+            sequence alignment.
         signature_type: Type of RT signature ('mismatch', 'rt_stop', 'gap',
             'combined'). Defaults to 'combined' because the channel a
             modification surfaces in is set by the reverse transcriptase,
@@ -583,14 +599,14 @@ class ModificationCaller:
     channel's threshold **and** (with ``statistical_test``) its p-value
     against that channel's own background survives Benjamini-Hochberg over
     all site x channel tests. Neither the modification profiles, the
-    position priors nor the RT-enzyme channel priors influence detection.
+    MODOMICS map nor the RT-enzyme channel priors influence detection.
 
-    **Identity** is a separate step: every profile compatible with the
-    site (reference nucleotide, substitution pattern when the mismatch
-    channel fired, ``signature_type`` channel restriction) becomes a
-    candidate, ranked by typical-position match, pattern fraction and
-    ``confidence_weight``. One row per site; the top candidate is
-    ``modification`` and the full ranked list is ``candidates``.
+    **Identity** is a separate step, assigned to the base the signal
+    implicates (RT stops point one base 5' of where they are recorded).
+    A MODOMICS modification at that base, mapped to this reference by
+    sequence alignment, labels the site; failing that, a profile whose
+    specific substitution pattern matches; otherwise ``novel_candidate``.
+    One row per site; ``candidates`` lists every compatible label.
 
     **Confidence** is a ranking score, not a gate (``min_confidence``
     defaults to 0). Per-enzyme channel priors scale it, and flag
@@ -626,8 +642,8 @@ class ModificationCaller:
             min_confidence: Drop calls whose confidence (before channel-prior
                 scaling) is below this. Default 0: detection is decided by
                 the channel tests, not by confidence.
-            use_position_priors: Use known modification positions to rank
-                candidates and boost confidence
+            use_position_priors: Use the MODOMICS modification map
+                (``known_mods_df``) to label sites and boost confidence
             statistical_test: Require per-channel significance (BH) in
                 addition to the rate threshold
             alpha: FDR level for the per-channel tests
@@ -841,13 +857,18 @@ class ModificationCaller:
 
     def _rank_candidates(
         self,
-        position: int,
         ref_nt: Optional[str],
         pscm_row: Optional[pd.Series],
         gated: Dict[str, bool],
         rt_stop_rate: float,
-    ) -> List[Tuple[ModificationProfile, float, bool]]:
-        """Compatible profiles at a site, best first: (profile, pattern_fraction, typical)."""
+    ) -> List[Tuple[ModificationProfile, float]]:
+        """Compatible profiles at a base, best first: (profile, pattern_fraction).
+
+        Ranked by substitution-pattern fraction, then ``confidence_weight``.
+        Canonical ``typical_positions`` are Sprinzl numbers and are not
+        compared with linear positions here; position evidence comes from
+        the sequence-specific MODOMICS map in :meth:`call_all`.
+        """
         ranked = []
         for profile in self.profiles.values():
             if not any(gated[c] for c in _SIGNATURE_CHANNELS[profile.signature_type]):
@@ -865,10 +886,29 @@ class ModificationCaller:
                         profile.mismatch_pattern, ref_nt, pscm_row)
                     if not matches:
                         continue
-            typical = self.use_position_priors and position in profile.typical_positions
-            ranked.append((profile, fraction, typical))
-        ranked.sort(key=lambda t: (t[2], t[1], t[0].confidence_weight), reverse=True)
+            ranked.append((profile, fraction))
+        ranked.sort(key=lambda t: (t[1], t[0].confidence_weight), reverse=True)
         return ranked
+
+    @staticmethod
+    def _known_mods_by_position(known_mods_df: Optional[pd.DataFrame]) -> Dict[int, Tuple[str, str]]:
+        """{linear_position: (short_name, full_name)}; co-located mods joined by '; '."""
+        pos_to_mod: Dict[int, Tuple[str, str]] = {}
+        if (known_mods_df is None or known_mods_df.empty
+                or 'linear_position' not in known_mods_df.columns):
+            return pos_to_mod
+        for _, row in known_mods_df.iterrows():
+            lp = int(row['linear_position'])
+            short = row.get('modification_short_name', 'known')
+            full = row.get('modification_full_name', short)
+            full = short if pd.isna(full) else full
+            if lp in pos_to_mod:
+                prev_short, prev_full = pos_to_mod[lp]
+                if short not in prev_short:
+                    pos_to_mod[lp] = (f"{prev_short}; {short}", f"{prev_full}; {full}")
+            else:
+                pos_to_mod[lp] = (short, full)
+        return pos_to_mod
 
     @staticmethod
     def _dominant_substitution(ref_nt: Optional[str], pscm_row: Optional[pd.Series]) -> str:
@@ -898,14 +938,21 @@ class ModificationCaller:
         Call modification sites for one tRNA: one row per site.
 
         Sites with a rate at or above any channel threshold are candidates.
-        Each gets a ranked list of compatible modification profiles
-        (``candidates``). The top one becomes ``modification`` only when a
-        typical position or a specific substitution pattern supports it
-        (``identity_support``); otherwise the site is ``novel_candidate``.
-        Detected sites are always reported -- identity never removes a
-        detection. When *known_mods_df* (MODOMICS, ``linear_position``) is
-        given, novel candidates at a known position are relabelled with that
-        modification (``source='known_modomics'``).
+        Identity is then assigned to the base the signal implicates
+        (``modified_position``): substitutions sit on the modified base,
+        deletions on it or just 3' of it, and RT stops one base 3' of it
+        (see :data:`_IMPLICATED_OFFSETS`). In order:
+
+        1. ``known_modomics`` -- *known_mods_df* (MODOMICS, mapped to linear
+           positions by sequence alignment) has a modification at an
+           implicated base. Requires ``use_position_priors``.
+        2. ``known`` -- a profile whose specific substitution pattern
+           matches (``identity_support='pattern'``).
+        3. ``novel_candidate`` -- detected, identity unresolved.
+
+        ``candidates`` lists the MODOMICS modification (if any) followed by
+        every compatible profile. Detected sites are always reported --
+        identity never removes a detection.
 
         With ``finalize=True`` the FDR family is this tRNA. For sample-wide
         FDR (the pipeline), pass ``finalize=False`` for every tRNA, concat,
@@ -940,92 +987,82 @@ class ModificationCaller:
 
         correct_nt = (signatures_df.set_index('position')['correct_nt']
                       if 'correct_nt' in signatures_df.columns else None)
+        pos_to_mod = (self._known_mods_by_position(known_mods_df)
+                      if self.use_position_priors else {})
+
+        def nt_at(pos):
+            if reference_seq is not None and 1 <= pos <= len(reference_seq):
+                return reference_seq[pos - 1].upper()
+            if correct_nt is not None and pos in correct_nt.index:
+                return str(correct_nt.loc[pos]).upper()
+            return None
 
         rows = []
         for rec in sites.to_dict('records'):
             position = int(rec['position'])
-            ref_nt = None
-            if reference_seq is not None and position <= len(reference_seq):
-                ref_nt = reference_seq[position - 1].upper()
-            elif correct_nt is not None and position in correct_nt.index:
-                ref_nt = str(correct_nt.loc[position]).upper()
             pscm_row = None
             if pscm_df is not None and 0 <= position - 1 < len(pscm_df):
                 pscm_row = pscm_df.iloc[position - 1]
 
             gated = {c: bool(rec[f'gate_{c}']) for c in CHANNELS}
-            ranked = self._rank_candidates(position, ref_nt, pscm_row, gated,
+            # Gated channels, strongest effect (rate / threshold) first
+            order = sorted((c for c in CHANNELS if gated[c]),
+                           key=lambda c: rec[f'rate_{c}'] / self.channel_thresholds[c],
+                           reverse=True)
+
+            # Profiles are judged on the base the strongest evidence points
+            # to; substitution evidence is always on the observed base.
+            base = position if gated['mismatch'] else position + _IMPLICATED_OFFSETS[order[0]][0]
+            ranked = self._rank_candidates(nt_at(base), pscm_row, gated,
                                            rec['rate_rt_stop'])
-            fraction, typical, support = 0.0, False, 'none'
-            if ranked:
-                top, fraction, typical = ranked[0]
-                specific = (fraction > 0 and bool(top.mismatch_pattern)
-                            and not top.mismatch_pattern.endswith('->any'))
-                support = ('+'.join(lbl for lbl, ok in
-                                    (('position', typical), ('pattern', specific)) if ok)
-                           or 'ref_nt_only')
-            # A label needs evidence beyond reference-nucleotide compatibility;
-            # otherwise the site is detected but its identity is unresolved
-            if support in ('none', 'ref_nt_only'):
-                modification, full_name, source = (
-                    'novel_candidate', 'unknown modification', 'novel_candidate')
+            names = [p.name for p, _ in ranked]
+
+            # MODOMICS modifications at the implicated bases, most likely first
+            hits = []
+            for c in order:
+                for off in _IMPLICATED_OFFSETS[c]:
+                    if position + off in pos_to_mod and position + off not in [h[0] for h in hits]:
+                        hits.append((position + off, pos_to_mod[position + off]))
+            modomics_hit = hits[0] if hits else None
+
+            fraction = 0.0
+            if modomics_hit is not None:
+                base, (modification, full_name) = modomics_hit
+                source, support = 'known_modomics', 'modomics'
+                hit_names = [name for _, (name, _) in hits]
+                names = hit_names + [n for n in names if not any(
+                    _MOD_ALIASES.get(n, n) in h for h in hit_names)]
+            elif ranked and ranked[0][1] > 0 and ranked[0][0].mismatch_pattern \
+                    and not ranked[0][0].mismatch_pattern.endswith('->any'):
+                top, fraction = ranked[0]
+                modification, full_name = top.name, top.full_name
+                source, support = 'known', 'pattern'
             else:
-                modification, full_name, source = top.name, top.full_name, 'known'
+                modification, full_name = 'novel_candidate', 'unknown modification'
+                source = 'novel_candidate'
+                support = 'ref_nt_only' if ranked else 'none'
 
             row = dict(rec)
             row.update({
                 'trna_name': trna_name,
                 'modification': modification,
                 'full_name': full_name,
-                'candidates': ';'.join(p.name for p, _, _ in ranked),
-                'n_candidates': len(ranked),
+                'modified_position': base,
+                'candidates': ';'.join(names),
+                'n_candidates': len(names),
                 'identity_support': support,
                 'pattern_fraction': fraction,
-                'in_typical_position': typical,
+                'in_typical_position': modomics_hit is not None,
                 'mismatch_rate': rec['rate_mismatch'],
                 'gap_rate': rec['rate_deletion'],
                 'rt_stop_pct': rec['rate_rt_stop'] * 100,
-                'dominant_pattern': (self._dominant_substitution(ref_nt, pscm_row)
+                'dominant_pattern': (self._dominant_substitution(nt_at(position), pscm_row)
                                      if gated['mismatch'] else ''),
                 'source': source,
             })
             rows.append(row)
 
-        if not rows:
-            return pd.DataFrame()
         calls = pd.DataFrame(rows)
-
-        # --- MODOMICS-guided relabelling of novel candidates ---
-        if (known_mods_df is not None
-                and not known_mods_df.empty
-                and 'linear_position' in known_mods_df.columns):
-            # Build a lookup: linear_position → (short_name, full_name)
-            pos_to_mod: Dict[int, Tuple[str, str]] = {}
-            for _, row in known_mods_df.iterrows():
-                lp = int(row['linear_position'])
-                short = row.get('modification_short_name', 'known')
-                full = row.get('modification_full_name', short)
-                # If multiple mods at same position, concatenate
-                if lp in pos_to_mod:
-                    prev_short, prev_full = pos_to_mod[lp]
-                    if short not in prev_short:
-                        pos_to_mod[lp] = (
-                            f"{prev_short}; {short}",
-                            f"{prev_full}; {full}",
-                        )
-                else:
-                    pos_to_mod[lp] = (short, full)
-
-            novel_mask = calls['source'] == 'novel_candidate'
-            for idx in calls.index[novel_mask]:
-                pos = int(calls.at[idx, 'position'])
-                if pos in pos_to_mod:
-                    short_name, full_name = pos_to_mod[pos]
-                    calls.at[idx, 'modification'] = short_name
-                    calls.at[idx, 'full_name'] = full_name
-                    calls.at[idx, 'source'] = 'known_modomics'
-                    calls.at[idx, 'in_typical_position'] = True
-
         if finalize:
             return self.finalize_calls(
                 calls, n_tests=self.count_tests(signatures_df, min_coverage))

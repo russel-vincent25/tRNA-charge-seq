@@ -1,8 +1,7 @@
 # Design: channel-aware calling and site identity (CHANNEL_FIX_SPEC change 4)
 
-**Status (2026-10-03):** detection is decided and implemented (§1–§5). Site identity and position
-handling (§6) is analysed with a fix proposed in §7; **it needs a decision before it is built.**
-Changes 5–6 are not started.
+**Status (2026-10-03):** detection (change 4, §1–§5) and site identity (change 4b, §6–§7) are
+decided and implemented. Changes 5–6 are not started.
 
 Evidence comes from the 2024-06-19 four-RT run (4 enzymes × 3 temperatures × 3 replicates,
 `ecoli.fa`, 49 references). Only `mismatch_profile.parquet` and `rt_profile.parquet` were used:
@@ -15,6 +14,9 @@ Decisions taken:
 | A | How channels combine | **OR** across substitution, deletion and RT stop |
 | B | Role of per-enzyme channel priors | **Confidence and QC flag only**, never detection |
 | C | Output shape | **One row per site** with a ranked candidate list |
+| E | Fix site identity before change 5 | **Yes** (change 4b, separate commit) |
+| F | Source of position evidence | **MODOMICS**, mapped by sequence alignment; no Sprinzl table. MODOMICS carries no Sprinzl numbering (the API returns only `seq`, `subtype`, `anticodon`, `organism`, `type` and empty ID fields) |
+| G | Commit layout | 4b as its own commit, so it can be reverted alone |
 | D | Regression test (change 6) | **Enzyme-agnostic**: channel invariance, calibration, no-regression, even recall across enzymes. Not "Indura gains most / TGIRT least". |
 
 ---
@@ -136,7 +138,7 @@ the same thresholds; it checks wiring, not method.
 
 ---
 
-## 6. Site identity: why so many calls are `novel_candidate`
+## 6. Site identity: why so many calls were `novel_candidate` (analysis before 4b)
 
 The detection numbers above are sound. **The labels are not**, and there are three distinct causes. All
 figures are four-RT, called sites, with MODOMICS relabelling enabled as the pipeline runs it.
@@ -208,51 +210,64 @@ The standalone `modifications` command crashes in `annotate_signatures` (HEAD to
 function without `ref_seq`, which drops to the "merge on raw Sprinzl positions" branch and casts
 `'20a'` to int. Stage 6 never takes that branch.
 
-## 7. Proposed fix (change 4b, not built)
+## 7. Implemented (change 4b)
 
-1. **Map RT-stop evidence to the modified base.** For identity lookups, an RT stop at linear *p*
-   implicates *p − 1*. Deletions use *p* (optionally *p + 1*). Detection is unchanged.
-2. **MODOMICS first.** Look up the sequence-specific MODOMICS map at the implicated base before any
-   profile ranking. A MODOMICS modification there:
-   - becomes the label (`identity_support = 'modomics'`), overriding profile labels instead of only
-     relabelling novel rows, and
-   - is placed first in `candidates`.
+1. **Signals are mapped to the modified base** (`_IMPLICATED_OFFSETS`), then identity is looked up
+   there. Measured where only one of the two candidate bases is modified:
+   - an RT stop at *p* implicates *p − 1* (58 cases) over *p* (11)
+   - a deletion implicates *p* (17) over *p − 1* (6)
+   - a substitution implicates *p* (60 to 1)
 
-   On the four-RT data, that combined with item 1 resolves about 119 of 240 novel sites and corrects
-   the 68 false m5C labels.
-3. **Real Sprinzl numbering for profile positions.** This is only needed where MODOMICS has no map,
-   e.g. the 3 E. coli references, much of human/mouse, and the RVHMS04 library. Build a per-reference
-   linear→Sprinzl table and compare `typical_positions` in Sprinzl space. Options:
-   - **(a) Infernal/tRNAscan-SE, precomputed (recommended).** Run `cmalign` against the tRNA covariance
-     model once per reference database, at `build-reference` time. Ship the table next to the FASTA;
-     stage 6 reads it. This is standard structural numbering and handles D-loop and variable-arm
-     insertions. It is installed locally (`/usr/bin/cmalign`, `/usr/local/bin/tRNAscan-SE`).
-     **Whether it is on O2 is unknown.** Precomputing means O2 only needs the table.
-   - **(b) Pure-Python anchored numbering.** Use three anchors:
-     - 5′ end for 1–9
-     - anticodon (34) for 27–43
-     - 3′ CCA (76) for 49–76
+   The base used is reported as `modified_position`. `position` stays where the signal was
+   observed.
+2. **MODOMICS first.** A MODOMICS modification at an implicated base labels the site
+   (`source='known_modomics'`, `identity_support='modomics'`). It overrides any profile label.
+   Previously MODOMICS only relabelled novel rows. Every MODOMICS hit at the implicated bases leads
+   `candidates`, followed by compatible profiles.
+3. **Sprinzl `typical_positions` are no longer compared with linear positions.** A profile labels
+   a site only on a specific substitution-pattern match (`identity_support='pattern'`). Otherwise
+   the site is `novel_candidate`. `use_position_priors=False` disables the MODOMICS lookup.
+4. **Offline MODOMICS for human and mouse.** `data/human_modomics_sequences.json` (42 sequences) and
+   `data/mouse_modomics_sequences.json` (12) were exported from the MODOMICS cache. Stage 6
+   defaults to `no_modomics: true`, so previously only E. coli had a map offline.
 
-     The D-loop and the 44–48 variable region stay ambiguous and would be flagged. This has no
-     dependency but is approximate exactly where m7G46/acp3U47 sit.
-4. **Fix the `'20a'` crash.** The CLI passes `ref_seq` to `annotate_signatures`, as stage 6 does. The
-   raw-Sprinzl merge skips non-integer positions instead of crashing.
-5. **Profile catalogue (optional, later).** acp3U, D, m5U, m2A and k2C have no profile. That matters
-   only where MODOMICS has no map.
+   Coverage with these files:
 
-Expected outcome on four-RT: about 10% `novel_candidate` (cause 3 only), and no profile label
-contradicting MODOMICS.
+   | reference set | exact isodecoder | same-isotype donor | none |
+   |---|---|---|---|
+   | human | 294 | 151 | 12 |
+   | RVHMS04_5215 library | 3,337 | 1,661 | 218 |
+   | mouse | 50 | 40 | 151 |
+5. **`'20a'` crash fixed.** The standalone CLI passes `ref_seq` and builds the same per-tRNA MODOMICS
+   map as stage 6. `annotate_signatures` skips non-integer Sprinzl labels in its no-mapping
+   branch instead of casting them.
 
-### Decisions needed
+Four-RT result (calls unchanged at 282/268/237/272):
 
-- **E. Scope:** build change 4b (items 1, 2, 4) now, before change 5?
-- **F. Sprinzl numbering:** (a) precomputed with Infernal, or (b) pure-Python anchors? Is Infernal
-  available on O2, or is precompute-locally-and-ship acceptable?
-- **G.** CHANNEL_FIX_SPEC said not to touch Sprinzl handling in this change. 4b does touch it, in the
-  identity layer only; detection stays unchanged. Should it stay a separate commit (recommended), so
-  coordinate changes can be reverted on their own?
+| | Indura | Maxima | SSIV | TGIRT |
+|---|---|---|---|---|
+| `novel_candidate`, before → after | 17.4 → 12.8% | 25.0 → 15.3% | 30.4 → 16.9% | 19.1 → 13.6% |
+| MODOMICS-labelled | 77.7 → 87.2% | 57.8 → 84.7% | 50.6 → 83.1% | 64.3 → 85.7% |
 
----
+- **m5C labels fell from 68 to 0.**
+- **26 former "Ψ" labels became m1G.** They are RT stops at 38 after m1G37; Ψ38 is RT-silent, and it
+  stays in `candidates`.
+- **Remaining novel sites: 154 site-observations** (deletion 68, RT stop 51, mismatch 35). These
+  have no MODOMICS modification at the implicated base.
+
+On the human example project, 48% of sites are MODOMICS-labelled.
+
+### Open items from 4b
+
+- **`unknown(O)` labels.** The MODOMICS symbol `O` is missing from the name table in `modomics.py`,
+  giving 89–117 such labels on the human example.
+- **Mouse coverage is thin** (151 of 241 references have no map). Human sequences could serve as
+  cross-species donors.
+- **`organism` defaults silently to E. coli.** Stage 6 uses `'Escherichia coli'` when the key is
+  absent. The example project's config lacks it, so a human dataset was annotated with E. coli
+  MODOMICS until `organism: human` was set.
+- **Profile catalogue gaps** (acp3U, D, m5U, m2A, k2C) matter only for references with no MODOMICS
+  map.
 
 Not yet done: change 5 (per-channel rates and `dominant_pattern` in the aggregates; also make
 `ReplicateAggregator` group by site rather than by label, since 5 of 447 site×condition groups split
