@@ -63,7 +63,8 @@ spike-ins, when present, feed the same fit.
 ## 3. Aggregation rules compared
 
 A channel *fires* when its rate is at or above the channel threshold (mismatch 0.10, deletion 0.10,
-RT stop 0.20; unchanged) **and** its BH q < 0.01. The false-positive proxy is replicate
+RT stop 0.20 at the time of this analysis; now 0.10, see §12) **and** its BH q < 0.01. The
+false-positive proxy is replicate
 reproducibility: of the site×temperature units called in at least one replicate, the share called
 in all three.
 
@@ -500,8 +501,8 @@ positions 70/74/75 as controls. Our defaults are mismatch 0.10 (matching), delet
 
 | rt_stop threshold | calls | unique sites | MODOMICS-explained | rt_stop-dominant (explained) | sites in >=2/3 reps |
 |---|---|---|---|---|---|
-| 0.20 (current) | 1,059 | 82 | 95.1% | 457 (96.1%) | 81.7% |
-| **0.10 (Nakano)** | **1,411** | **96** | **95.1%** | 830 (95.8%) | 81.8% |
+| 0.20 (old) | 1,059 | 82 | 95.1% | 457 (96.1%) | 81.7% |
+| **0.10 (adopted)** | **1,411** | **96** | **95.1%** | 830 (95.8%) | 81.8% |
 
 **+33% calls and +14 sites at identical precision** on both proxies. The 14 gained sites are
 exactly the classes we were under-detecting, all RT-stop-driven: **D16 in `Asn-GTT` (5 obs, 3
@@ -509,11 +510,33 @@ enzymes) and `Val-GAC-2` (9 obs, 2 enzymes), m7G46 in `Thr-GGT` (4 obs, 2 enzyme
 Psi40** — dihydrouridine was our worst class (23/83) and Psi was 0/76. The other 9 gained sites are
 single observations and look like noise.
 
-⚠ **Decision required before changing it.** CHANNEL_FIX_SPEC says "do not lower thresholds to
-compensate", and that warning was about substituting stringency for a channel fix. This is a
-different case: aligning with a published standard, after the channel fix, with no measured
-precision loss. But `DEFAULT_CHANNEL_THRESHOLDS` derives from `DERIVATION_THRESHOLDS`, so changing
-it also invalidates `data/rt_channel_priors.csv`, which would need regenerating. **Not changed.**
+#### Adopted 2026-10-03: `DERIVATION_THRESHOLDS['rt_stop']` 0.20 -> 0.10
+
+CHANNEL_FIX_SPEC's "do not lower thresholds to compensate" was about substituting stringency for a
+channel fix. This is the opposite case: after the channel fix, aligning with the published standard,
+with no measured precision loss. Consequences, all verified:
+
+- **Priors regenerated** from the same four-RT profiles. Signal observations rise (Indura 282 ->
+  398, Maxima 268 -> 331, SSIV 237 -> 309, TGIRT 272 -> 379).
+- **RT stops now lead for three of four enzymes** pooled (Indura 0.74, SSIV 0.49, TGIRT 0.54;
+  Maxima deletion 0.35). A lower stop threshold admits many low-level stops, so "which channel tops
+  out" is no longer the informative summary. **The enzyme contrast survives as relative
+  differences**, which is what the fix was about: Indura has the highest stop weight (0.74) and the
+  lowest deletion weight (0.07), Maxima the highest deletion weight (0.35), and Maxima at 55 °C
+  remains the deletion-dominant cell of the matrix (0.45 deletion vs 0.16 stop).
+- **`unexpected_channel` now fires on different cases.** Maxima at 55 °C no longer trips it (stop
+  weight 0.036 -> 0.162, above the 0.10 cut-off); a deletion-only site on Indura does
+  (weight 0.067), which is the biologically sensible flag — Indura barely deletes.
+- **Detection ceiling barely moves: 65 -> 70 of 343** known modified bases (19% -> 20%), gaining
+  D +2, Psi +1, m7G +1, s2C +1. The modifications still missed (Psi 75/76, m5U 44/44, s4U 28/28,
+  t6A, m2A, cmo5U, Q) leave **no** RT signal rather than a sub-threshold one, so no threshold
+  recovers them.
+- **Three tests were rewritten**, not weakened: the priors test now asserts the relative enzyme
+  contrast rather than which channel tops out; the `unexpected_channel` test uses Indura-deletion
+  instead of Maxima-stop; and a pre-existing fold-change test now fires a single channel so the
+  dominant channel is unambiguous. The four-RT regression test was re-verified to still
+  discriminate — honest run 1.00 recall for all four enzymes, mismatch-only mutation 0.23-0.42
+  and failing.
 
 ### What RT_comp still adds
 

@@ -267,12 +267,13 @@ class TestFoldChange:
             background_error_rate=0.01, statistical_test=False,
         )
 
-        # Build minimal signature DataFrame
+        # Only the substitution channel clears its threshold, so the
+        # dominant channel (and hence fold_change) is unambiguous
         sig = pd.DataFrame([{
             'position': 58,
             'has_signature': True,
             'mismatch_rate': 0.25,
-            'rt_stop_pct': 30.0,
+            'rt_stop_pct': 1.0,
             'gap_rate': 0.0,
             'coverage': 1000,
         }])
@@ -281,6 +282,7 @@ class TestFoldChange:
         if not calls.empty:
             assert 'fold_change' in calls.columns
             assert 'background_error_rate' in calls.columns
+            assert calls.iloc[0]['dominant_channel'] == 'mismatch'
             # 0.25 / 0.01 = 25.0
             assert calls.iloc[0]['fold_change'] == pytest.approx(25.0, rel=0.1)
 

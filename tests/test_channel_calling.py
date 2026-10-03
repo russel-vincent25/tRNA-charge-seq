@@ -141,15 +141,24 @@ class TestPriorsDoNotGateDetection:
         }
         assert all(sites == {100, 120, 130} for sites in called.values())
 
-    def test_priors_scale_confidence_and_flag(self):
+    def test_priors_scale_confidence(self):
+        # An RT stop is routine for Indura (prior weight 0.74) and suppressed
+        # for Maxima at 55 C (0.16), so confidence is scaled accordingly
         sig = _signatures({120: {'rt_stop_pct': 40.0}})
         agnostic = _caller().call_all('t', sig).iloc[0]
         indura = _caller(rt_enzyme='Indura').call_all('t', sig).iloc[0]
         maxima = _caller(rt_enzyme='Maxima', rt_temp=55).call_all('t', sig).iloc[0]
         assert agnostic['channel_prior_factor'] == 1.0
         assert indura['confidence'] > agnostic['confidence'] > maxima['confidence']
-        # Maxima at 55 C almost never shows RT stops (prior weight < 0.10)
-        assert maxima['unexpected_channel'] and not indura['unexpected_channel']
+
+    def test_unexpected_channel_flags_signal_the_enzyme_rarely_gives(self):
+        # Indura barely deletes (prior weight 0.07); Maxima does (0.35)
+        sig = _signatures({100: {'gap_rate': 0.3}})
+        indura = _caller(rt_enzyme='Indura').call_all('t', sig).iloc[0]
+        maxima = _caller(rt_enzyme='Maxima').call_all('t', sig).iloc[0]
+        assert indura['unexpected_channel'] and not maxima['unexpected_channel']
+        # flagged, not withheld
+        assert indura['modification'] or indura['source']
 
 
 class TestSiteLevelOutput:

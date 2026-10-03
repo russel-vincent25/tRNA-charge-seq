@@ -34,9 +34,14 @@ import pandas as pd
 
 CHANNELS = ('mismatch', 'deletion', 'rt_stop')
 
-# Per-channel signal thresholds used for derivation (caller defaults:
-# mismatch 0.10, RT stop 20%, deletion 0.10)
-DERIVATION_THRESHOLDS = {'mismatch': 0.10, 'deletion': 0.10, 'rt_stop': 0.20}
+# Per-channel signal thresholds, used both for prior derivation and as the
+# caller's default calling thresholds. 0.10 in every channel follows the
+# published standard: Nakano et al. 2025 (Nat Commun 16:1047) call a
+# modification at ">10% of RT misincorporation or stop". On the four-RT data
+# an RT-stop threshold of 0.10 rather than 0.20 recovers 14 further sites --
+# D16, m7G46, s2C33, Psi40, all RT-stop-driven -- at identical precision by
+# both MODOMICS agreement and replicate reproducibility.
+DERIVATION_THRESHOLDS = {'mismatch': 0.10, 'deletion': 0.10, 'rt_stop': 0.10}
 DERIVATION_MIN_COVERAGE = 100
 
 PRIORS_CSV = Path(__file__).parent / 'data' / 'rt_channel_priors.csv'
