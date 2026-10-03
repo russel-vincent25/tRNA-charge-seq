@@ -4,6 +4,12 @@ Modification Caller for tRNA RT Signatures
 This module annotates RT signatures with specific tRNA modification types based on
 known RT signature patterns from the literature.
 
+Sites are detected by OR across three channels -- substitution, deletion and
+RT stop -- each tested against its own beta-binomial background, because the
+channel a modification surfaces in depends on the reverse transcriptase.
+Modification identity is assigned afterwards as a ranked candidate list
+(see docs/CHANNEL_COMBINED_DESIGN.md).
+
 Key modifications detected:
 - m1A (1-methyladenosine): Strong RT stops, A->any mismatches at positions 58, 14
 - m3C (3-methylcytosine): C->T mismatches at positions 32
@@ -21,8 +27,39 @@ References:
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from scipy import stats
+from scipy.optimize import minimize
+from scipy.special import expit, logit
 from scipy.stats import binomtest, combine_pvalues
+
+from .channel_priors import CHANNELS, DERIVATION_THRESHOLDS, load_channel_priors
+
+SIGNATURE_TYPES = ('mismatch', 'rt_stop', 'gap', 'combined')
+
+# Detection channels each signature_type may be called from
+_SIGNATURE_CHANNELS = {
+    'mismatch': ('mismatch',),
+    'gap': ('deletion',),
+    'rt_stop': ('rt_stop',),
+    'combined': CHANNELS,
+}
+
+# Per-channel rate thresholds for calling (RT stop as a fraction). Same
+# values the channel priors were derived at.
+DEFAULT_CHANNEL_THRESHOLDS = dict(DERIVATION_THRESHOLDS)
+
+# Signature-table column and scale giving each channel's rate
+_RATE_SOURCE = {
+    'mismatch': ('mismatch_rate', 1.0),
+    'deletion': ('gap_rate', 1.0),
+    'rt_stop': ('rt_stop_pct', 0.01),
+}
+
+# A fired channel whose prior weight is below this is 'unexpected' for the enzyme
+UNEXPECTED_CHANNEL_WEIGHT = 0.10
+
+_NT_IDX = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 
 
 @dataclass
@@ -34,16 +71,22 @@ class ModificationProfile:
         name: Modification name (e.g., 'm1A')
         full_name: Full chemical name
         typical_positions: Common positions where this modification occurs
-        signature_type: Type of RT signature ('mismatch', 'rt_stop', 'gap', 'combined')
+        signature_type: Type of RT signature ('mismatch', 'rt_stop', 'gap',
+            'combined'). Defaults to 'combined' because the channel a
+            modification surfaces in is set by the reverse transcriptase,
+            not the modification; override per profile (or via
+            ``ModificationCaller(signature_overrides=...)``) only when a
+            channel is known to be uninformative.
         mismatch_pattern: Expected mismatch pattern (e.g., 'A->G', 'A->any')
-        min_rate: Minimum rate to call this modification
+        min_rate: Legacy per-profile mismatch floor; detection now uses the
+            per-channel thresholds in ModificationCaller (unused for calling)
         rt_stop_required: Whether RT stops are required for calling
         min_rt_stop_pct: Minimum RT stop percentage if required
     """
     name: str
     full_name: str
     typical_positions: List[int]
-    signature_type: str
+    signature_type: str = 'combined'
     mismatch_pattern: Optional[str] = None
     min_rate: float = 0.10
     rt_stop_required: bool = False
@@ -57,7 +100,6 @@ MODIFICATION_PROFILES = {
         name='m1A',
         full_name='1-methyladenosine',
         typical_positions=[58, 14, 9],
-        signature_type='combined',
         mismatch_pattern='A->any',
         min_rate=0.10,
         rt_stop_required=False,  # RT stop boosts confidence but isn't required
@@ -69,7 +111,6 @@ MODIFICATION_PROFILES = {
         name='m3C',
         full_name='3-methylcytosine',
         typical_positions=[32],
-        signature_type='mismatch',
         mismatch_pattern='C->T',
         min_rate=0.10,
         rt_stop_required=False,
@@ -80,7 +121,6 @@ MODIFICATION_PROFILES = {
         name='Ψ',
         full_name='pseudouridine',
         typical_positions=[27, 28, 31, 32, 39, 40, 55, 13, 38],
-        signature_type='mismatch',
         mismatch_pattern='U->C',
         min_rate=0.08,
         rt_stop_required=False,
@@ -91,7 +131,6 @@ MODIFICATION_PROFILES = {
         name='m7G',
         full_name='7-methylguanosine',
         typical_positions=[46],
-        signature_type='mismatch',
         mismatch_pattern='G->any',  # TGIRT/Maxima produce G->C; some enzymes G->A
         min_rate=0.10,
         rt_stop_required=False,
@@ -102,7 +141,6 @@ MODIFICATION_PROFILES = {
         name='m5C',
         full_name='5-methylcytosine',
         typical_positions=[48, 49, 34, 40],
-        signature_type='mismatch',
         mismatch_pattern='C->T',
         min_rate=0.05,  # Subtle signature
         rt_stop_required=False,
@@ -113,7 +151,6 @@ MODIFICATION_PROFILES = {
         name='i6A',
         full_name='N6-isopentenyladenosine',
         typical_positions=[37],
-        signature_type='mismatch',
         mismatch_pattern='A->G',
         min_rate=0.10,
         rt_stop_required=False,
@@ -124,7 +161,6 @@ MODIFICATION_PROFILES = {
         name='m2G',
         full_name='N2-methylguanosine',
         typical_positions=[10, 26],
-        signature_type='mismatch',
         mismatch_pattern='G->A',
         min_rate=0.08,
         rt_stop_required=False,
@@ -135,7 +171,6 @@ MODIFICATION_PROFILES = {
         name='m22G',
         full_name='N2,N2-dimethylguanosine',
         typical_positions=[26],
-        signature_type='mismatch',
         mismatch_pattern='G->A',
         min_rate=0.10,
         rt_stop_required=False,
@@ -146,7 +181,6 @@ MODIFICATION_PROFILES = {
         name='s4U',
         full_name='4-thiouridine',
         typical_positions=[8, 9, 4],
-        signature_type='mismatch',
         mismatch_pattern='U->C',
         min_rate=0.08,
         rt_stop_required=False,
@@ -157,7 +191,6 @@ MODIFICATION_PROFILES = {
         name='m1G',
         full_name='1-methylguanosine',
         typical_positions=[37, 9],
-        signature_type='combined',
         mismatch_pattern='G->any',
         min_rate=0.08,
         rt_stop_required=False,
@@ -169,7 +202,6 @@ MODIFICATION_PROFILES = {
         name='cmo5U',
         full_name='uridine 5-oxyacetic acid',
         typical_positions=[34],
-        signature_type='mismatch',
         mismatch_pattern='U->C',
         min_rate=0.08,
         rt_stop_required=False,
@@ -180,7 +212,6 @@ MODIFICATION_PROFILES = {
         name='mnm5s2U',
         full_name='5-methylaminomethyl-2-thiouridine',
         typical_positions=[34],
-        signature_type='combined',
         mismatch_pattern='U->C',
         min_rate=0.08,
         rt_stop_required=False,
@@ -191,7 +222,6 @@ MODIFICATION_PROFILES = {
         name='t6A',
         full_name='N6-threonylcarbamoyladenosine',
         typical_positions=[37],
-        signature_type='mismatch',
         mismatch_pattern='A->T',
         min_rate=0.08,
         rt_stop_required=False,
@@ -202,7 +232,6 @@ MODIFICATION_PROFILES = {
         name='ms2i6A',
         full_name='2-methylthio-N6-isopentenyladenosine',
         typical_positions=[37],
-        signature_type='combined',
         mismatch_pattern='A->G',
         min_rate=0.08,
         rt_stop_required=False,
@@ -214,7 +243,6 @@ MODIFICATION_PROFILES = {
         name='I',
         full_name='inosine',
         typical_positions=[34],
-        signature_type='mismatch',
         mismatch_pattern='A->G',
         min_rate=0.10,
         rt_stop_required=False,
@@ -227,7 +255,6 @@ MODIFICATION_PROFILES = {
         name='ac4C',
         full_name='N4-acetylcytidine',
         typical_positions=[12, 34],
-        signature_type='mismatch',
         mismatch_pattern='C->T',
         min_rate=0.05,
         rt_stop_required=False,
@@ -238,7 +265,6 @@ MODIFICATION_PROFILES = {
         name='Gm',
         full_name="2'-O-methylguanosine",
         typical_positions=[18, 34],
-        signature_type='mismatch',
         mismatch_pattern='G->any',
         min_rate=0.05,
         rt_stop_required=False,
@@ -249,7 +275,6 @@ MODIFICATION_PROFILES = {
         name='Cm',
         full_name="2'-O-methylcytidine",
         typical_positions=[32, 34],
-        signature_type='mismatch',
         mismatch_pattern='C->any',
         min_rate=0.05,
         rt_stop_required=False,
@@ -260,7 +285,6 @@ MODIFICATION_PROFILES = {
         name='Um',
         full_name="2'-O-methyluridine",
         typical_positions=[32, 44],
-        signature_type='mismatch',
         mismatch_pattern='U->any',
         min_rate=0.05,
         rt_stop_required=False,
@@ -271,7 +295,6 @@ MODIFICATION_PROFILES = {
         name='Am',
         full_name="2'-O-methyladenosine",
         typical_positions=[44],
-        signature_type='mismatch',
         mismatch_pattern='A->any',
         min_rate=0.05,
         rt_stop_required=False,
@@ -282,7 +305,6 @@ MODIFICATION_PROFILES = {
         name='Q',
         full_name='queuosine',
         typical_positions=[34],
-        signature_type='mismatch',
         mismatch_pattern='G->any',
         min_rate=0.08,
         rt_stop_required=False,
@@ -293,7 +315,6 @@ MODIFICATION_PROFILES = {
         name='m6A',
         full_name='N6-methyladenosine',
         typical_positions=[37, 58],
-        signature_type='mismatch',
         mismatch_pattern='A->any',
         min_rate=0.05,
         rt_stop_required=False,
@@ -379,49 +400,251 @@ def estimate_background_error_rate(
     return (FLOOR, 'empirical_q25')
 
 
+# ---------------------------------------------------------------------------
+# Per-channel background model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ChannelBackground:
+    """Null model for one detection channel.
+
+    Beta-binomial with mean *mean* and overdispersion (intra-class
+    correlation) *rho*; ``rho == 0`` is a plain binomial. A single binomial
+    rate is not calibrated for any channel -- per-position null rates are
+    overdispersed, RT stops ~10x more than mismatches -- so *rho* matters.
+
+    Attributes:
+        mean: Null event rate per read (substitution, deletion or RT stop).
+        rho: Overdispersion in [0, 1); 0 means binomial.
+        source: 'synthetic', 'empirical_bulk' or 'fixed'.
+        n_positions: Positions the fit used.
+    """
+    mean: float
+    rho: float = 0.0
+    source: str = 'fixed'
+    n_positions: int = 0
+
+    def sf(self, k, n) -> np.ndarray:
+        """P(X >= k) under the null, vectorised over positions."""
+        k = np.asarray(k, dtype=np.int64)
+        n = np.asarray(n, dtype=np.int64)
+        if self.mean <= 0:
+            return np.where(k > 0, 0.0, 1.0)
+        if self.rho <= 1e-9:
+            return stats.binom.sf(k - 1, n, self.mean)
+        a = self.mean * (1 - self.rho) / self.rho
+        b = (1 - self.mean) * (1 - self.rho) / self.rho
+        return stats.betabinom.sf(k - 1, n, a, b)
+
+
+def _channel_counts(mat: np.ndarray, ref_seq: str):
+    """Per-position (k, n, valid) for each channel from a PositionalExtractor
+    matrix (columns A, C, G, T, N, gap, coverage, rt_stop)."""
+    n_pos = min(mat.shape[0], len(ref_seq))
+    mat = mat[:n_pos]
+    nt_idx = np.array([_NT_IDX.get(nt, -1) for nt in ref_seq.upper()[:n_pos]])
+    valid = nt_idx >= 0
+    cov = mat[:, 6]
+    correct = np.where(valid, mat[np.arange(n_pos), np.clip(nt_idx, 0, 3)], 0)
+    gap = mat[:, 5]
+    counts = {
+        'mismatch': np.clip(cov - correct - gap, 0, None),
+        'deletion': gap,
+        'rt_stop': mat[:, 7],
+    }
+    # Position 1: every full-length read "stops" there by construction
+    stop_valid = valid.copy()
+    stop_valid[:1] = False
+    masks = {'mismatch': valid, 'deletion': valid, 'rt_stop': stop_valid}
+    return cov, counts, masks
+
+
+def _fit_beta_binomial(k: np.ndarray, n: np.ndarray) -> Tuple[float, float]:
+    """ML fit of (mean, rho) for a beta-binomial; falls back to binomial."""
+    total_k, total_n = float(k.sum()), float(n.sum())
+    if total_k == 0:
+        # No events at all: half a pseudo-event keeps p-values finite
+        return 0.5 / total_n, 0.0
+    mu0 = total_k / total_n
+
+    def nll(t):
+        mu, rho = expit(t[0]), expit(t[1])
+        a = mu * (1 - rho) / rho
+        b = (1 - mu) * (1 - rho) / rho
+        return -stats.betabinom.logpmf(k, n, a, b).sum()
+
+    res = minimize(nll, [logit(mu0), logit(1e-3)], method='Nelder-Mead',
+                   options={'xatol': 1e-4, 'fatol': 1e-3, 'maxiter': 400})
+    if not np.isfinite(res.fun):
+        return mu0, 0.0
+    return float(expit(res.x[0])), float(expit(res.x[1]))
+
+
+def estimate_channel_backgrounds(
+    pscm_dict: Dict[str, np.ndarray],
+    ref_dict: Dict[str, dict],
+    synthetic_prefixes: Tuple[str, ...] = ('Synthetic_',),
+    min_coverage: int = 50,
+    thresholds: Optional[Dict[str, float]] = None,
+    max_positions: int = 5000,
+    seed: int = 0,
+) -> Dict[str, ChannelBackground]:
+    """Fit a beta-binomial null per detection channel for one sample.
+
+    Positions come from synthetic (unmodified) tRNAs when present, otherwise
+    from all tRNAs. Either way only the null bulk is used -- positions whose
+    rate is below half the channel's calling threshold -- so real
+    modifications do not inflate the null. At most *max_positions* positions
+    per channel are used (random, seeded) to bound fitting time.
+
+    Args:
+        pscm_dict: {trna_name: ndarray(ref_len, 8)} for ONE sample.
+        ref_dict: {trna_name: {'seq': str, ...}}.
+        synthetic_prefixes: Name prefixes of synthetic spike-in tRNAs.
+        min_coverage: Ignore positions below this coverage.
+        thresholds: Per-channel calling thresholds (default
+            :data:`DEFAULT_CHANNEL_THRESHOLDS`).
+        max_positions: Cap on positions per channel fit.
+        seed: RNG seed for the subsample.
+
+    Returns:
+        {channel: ChannelBackground}.
+    """
+    thresholds = thresholds or DEFAULT_CHANNEL_THRESHOLDS
+
+    def collect(names):
+        ks = {c: [] for c in CHANNELS}
+        ns = {c: [] for c in CHANNELS}
+        for name in names:
+            if name not in ref_dict:
+                continue
+            cov, counts, masks = _channel_counts(pscm_dict[name], ref_dict[name]['seq'])
+            for c in CHANNELS:
+                keep = masks[c] & (cov >= min_coverage)
+                ks[c].append(counts[c][keep])
+                ns[c].append(cov[keep])
+        return ({c: np.concatenate(ks[c]) if ks[c] else np.array([]) for c in CHANNELS},
+                {c: np.concatenate(ns[c]) if ns[c] else np.array([]) for c in CHANNELS})
+
+    synthetic = [t for t in pscm_dict if t.startswith(tuple(synthetic_prefixes))]
+    k_all, n_all = collect(synthetic)
+    source = 'synthetic'
+    if not any(len(n_all[c]) for c in CHANNELS):
+        k_all, n_all = collect(list(pscm_dict))
+        source = 'empirical_bulk'
+
+    rng = np.random.default_rng(seed)
+    backgrounds = {}
+    for c in CHANNELS:
+        k, n = k_all[c], n_all[c]
+        if len(n) == 0:
+            backgrounds[c] = ChannelBackground(mean=0.001, source='default')
+            continue
+        bulk = (k / n) < 0.5 * thresholds[c]
+        k, n = k[bulk].astype(np.int64), n[bulk].astype(np.int64)
+        if len(n) > max_positions:
+            pick = rng.choice(len(n), max_positions, replace=False)
+            k, n = k[pick], n[pick]
+        mean, rho = _fit_beta_binomial(k, n)
+        backgrounds[c] = ChannelBackground(mean=mean, rho=rho, source=source,
+                                           n_positions=len(n))
+    return backgrounds
+
+
+def _bh_qvalues(pvals: np.ndarray, n_tests: int) -> np.ndarray:
+    """BH q-values for *pvals* within a family of *n_tests* tests.
+
+    Tests not passed in (sites below every effect threshold) are treated as
+    having larger p-values than any passed in, which is conservative.
+    """
+    p = np.asarray(pvals, dtype=np.float64)
+    m = max(int(n_tests), len(p))
+    if len(p) == 0:
+        return p
+    order = np.argsort(p)
+    ranked = p[order] * m / np.arange(1, len(p) + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]
+    q = np.empty_like(p)
+    q[order] = np.minimum(ranked, 1.0)
+    return q
+
+
+def _same_nt(a: str, b: str) -> bool:
+    return a == b or {a, b} <= {'U', 'T'}
+
+
 class ModificationCaller:
     """
-    Call specific tRNA modifications based on RT signature patterns.
+    Call tRNA modification sites from per-position RT signatures.
 
-    This class takes RT signature data and matches it against known modification
-    profiles to identify likely modification sites with confidence scores.
+    **Detection** is per site and channel-agnostic: a site is called when
+    any of the three channels -- substitution (``mismatch``), deletion and
+    RT stop -- *fires*. A channel fires when its rate is at or above that
+    channel's threshold **and** (with ``statistical_test``) its p-value
+    against that channel's own background survives Benjamini-Hochberg over
+    all site x channel tests. Neither the modification profiles, the
+    position priors nor the RT-enzyme channel priors influence detection.
+
+    **Identity** is a separate step: every profile compatible with the
+    site (reference nucleotide, substitution pattern when the mismatch
+    channel fired, ``signature_type`` channel restriction) becomes a
+    candidate, ranked by typical-position match, pattern fraction and
+    ``confidence_weight``. One row per site; the top candidate is
+    ``modification`` and the full ranked list is ``candidates``.
+
+    **Confidence** is a ranking score, not a gate (``min_confidence``
+    defaults to 0). Per-enzyme channel priors scale it, and flag
+    ``unexpected_channel`` when signal arrives only in channels the enzyme
+    rarely uses -- the call is kept either way.
 
     Example:
-        >>> from trnaseq.modifications import RTSignatureAnalyzer, ModificationCaller
-        >>>
-        >>> # Get RT signatures
-        >>> analyzer = RTSignatureAnalyzer()
-        >>> results = analyzer.analyze_all_trnas()
-        >>>
-        >>> # Call modifications
-        >>> caller = ModificationCaller(organism='human')
-        >>> modifications = caller.call_modifications_for_trna(
-        ...     'tRNA-Thr-AGT-1-1',
-        ...     results['tRNA-Thr-AGT-1-1']['signatures']
-        ... )
+        >>> caller = ModificationCaller(organism='human', rt_enzyme='Maxima',
+        ...                             channel_backgrounds=backgrounds)
+        >>> calls = caller.call_all(trna_name, analysis['signatures'],
+        ...                         pscm_df, ref_seq)
     """
 
     def __init__(
         self,
         organism: str = 'human',
-        min_confidence: float = 0.5,
+        min_confidence: float = 0.0,
         use_position_priors: bool = True,
         statistical_test: bool = True,
         alpha: float = 0.01,
         background_error_rate: float = 0.01,
+        rt_enzyme: Optional[str] = None,
+        rt_temp: Optional[float] = None,
+        signature_overrides: Optional[Dict[str, str]] = None,
+        channel_backgrounds: Optional[Dict[str, ChannelBackground]] = None,
+        channel_thresholds: Optional[Dict[str, float]] = None,
     ):
         """
         Initialize modification caller.
 
         Args:
             organism: Organism name (for position priors)
-            min_confidence: Minimum confidence score to report (0-1)
-            use_position_priors: Use known modification positions to boost confidence
-            statistical_test: Perform binomial test for significance
-            alpha: Significance level for statistical test
-            background_error_rate: Expected sequencing error rate for binomial
-                test and fold-change computation. Use
-                :func:`estimate_background_error_rate` to set empirically.
+            min_confidence: Drop calls whose confidence (before channel-prior
+                scaling) is below this. Default 0: detection is decided by
+                the channel tests, not by confidence.
+            use_position_priors: Use known modification positions to rank
+                candidates and boost confidence
+            statistical_test: Require per-channel significance (BH) in
+                addition to the rate threshold
+            alpha: FDR level for the per-channel tests
+            background_error_rate: Legacy single null rate, applied to every
+                channel as a binomial when *channel_backgrounds* is None.
+            rt_enzyme: Reverse transcriptase that produced the data (e.g.
+                'Maxima', 'SSIV', 'TGIRT', 'Indura'). Recorded on every call
+                for provenance and used to look up per-enzyme channel
+                priors. ``None`` means unknown: enzyme-agnostic behaviour.
+            rt_temp: RT incubation temperature in degrees C, or ``None``.
+            signature_overrides: ``{profile_key: signature_type}`` to
+                restrict specific modifications to one channel (keys as in
+                :data:`MODIFICATION_PROFILES`).
+            channel_backgrounds: ``{channel: ChannelBackground}`` from
+                :func:`estimate_channel_backgrounds`.
+            channel_thresholds: Per-channel rate thresholds (RT stop as a
+                fraction); default :data:`DEFAULT_CHANNEL_THRESHOLDS`.
         """
         self.organism = organism
         self.min_confidence = min_confidence
@@ -429,9 +652,38 @@ class ModificationCaller:
         self.statistical_test = statistical_test
         self.alpha = alpha
         self.background_error_rate = background_error_rate
+        self.rt_enzyme = rt_enzyme
+        self.rt_temp = rt_temp
+        self.channel_priors = load_channel_priors(rt_enzyme, rt_temp)
 
-        # Load modification profiles
-        self.profiles = MODIFICATION_PROFILES
+        if channel_backgrounds is None:
+            channel_backgrounds = {
+                c: ChannelBackground(mean=background_error_rate)
+                for c in CHANNELS
+            }
+        missing = set(CHANNELS) - set(channel_backgrounds)
+        if missing:
+            raise ValueError(f"channel_backgrounds missing {sorted(missing)}")
+        self.channel_backgrounds = channel_backgrounds
+        self.channel_thresholds = dict(DEFAULT_CHANNEL_THRESHOLDS)
+        self.channel_thresholds.update(channel_thresholds or {})
+
+        # Load modification profiles (copied when overridden so the
+        # module-level defaults are never mutated)
+        self.profiles = dict(MODIFICATION_PROFILES)
+        for key, sig_type in (signature_overrides or {}).items():
+            if key not in self.profiles:
+                raise ValueError(
+                    f"Unknown modification profile '{key}' in "
+                    f"signature_overrides; known: {sorted(self.profiles)}"
+                )
+            if sig_type not in SIGNATURE_TYPES:
+                raise ValueError(
+                    f"Invalid signature_type '{sig_type}' for '{key}'; "
+                    f"expected one of {SIGNATURE_TYPES}"
+                )
+            self.profiles[key] = replace(self.profiles[key],
+                                         signature_type=sig_type)
 
     def match_mismatch_pattern(
         self,
@@ -440,7 +692,11 @@ class ModificationCaller:
         pscm_row: pd.Series
     ) -> Tuple[bool, float]:
         """
-        Check if observed mismatch pattern matches expected pattern.
+        Check if observed substitution pattern matches expected pattern.
+
+        Deletions ('-') and N calls are not substitutions and are excluded
+        from the mismatch total, so a deletion-dominated site cannot fail
+        or pass a substitution pattern on the strength of its gaps.
 
         Args:
             pattern: Expected pattern (e.g., 'A->G', 'A->any', 'C->T')
@@ -460,25 +716,23 @@ class ModificationCaller:
         expected_ref, expected_obs = parts
 
         # Check reference nucleotide matches (handle U/T equivalence)
-        if expected_ref != ref_nt and not (
-            {expected_ref, ref_nt} <= {'U', 'T'}
-        ):
+        if not _same_nt(expected_ref, ref_nt):
             return False, 0.0
 
-        # Calculate total mismatches
         total_coverage = pscm_row.sum()
         if total_coverage == 0:
             return False, 0.0
 
         correct_count = pscm_row.get(ref_nt, 0)
-        total_mismatches = total_coverage - correct_count
+        non_substitution = pscm_row.get('-', 0) + pscm_row.get('N', 0)
+        total_mismatches = total_coverage - correct_count - non_substitution
 
-        if total_mismatches == 0:
+        if total_mismatches <= 0:
             return False, 0.0
 
         # Check if specific nucleotide pattern matches
         if expected_obs == 'any':
-            # Any mismatch is acceptable
+            # Any substitution is acceptable
             fraction = total_mismatches / total_coverage
             return True, fraction
         else:
@@ -490,79 +744,9 @@ class ModificationCaller:
             if obs_count == 0:
                 return False, 0.0
             fraction = obs_count / total_coverage
-            # Pattern matches if this specific mismatch is dominant
-            matches = obs_count >= (total_mismatches * 0.5)  # At least 50% of mismatches
+            # Pattern matches if this specific substitution is dominant
+            matches = obs_count >= (total_mismatches * 0.5)
             return matches, fraction
-
-    def calculate_confidence(
-        self,
-        profile: ModificationProfile,
-        position: int,
-        mismatch_rate: float,
-        rt_stop_pct: float,
-        gap_rate: float,
-        pattern_fraction: float,
-        coverage: float
-    ) -> float:
-        """
-        Calculate confidence score for modification call.
-
-        Confidence is based on:
-        1. Mismatch rate (higher is better)
-        2. RT stop percentage (if required)
-        3. Pattern specificity
-        4. Position match (if using priors)
-        5. Coverage (higher is more reliable)
-
-        Args:
-            profile: Modification profile
-            position: Position in tRNA
-            mismatch_rate: Observed mismatch rate
-            rt_stop_pct: Observed RT stop percentage
-            gap_rate: Observed gap rate
-            pattern_fraction: Fraction matching expected pattern
-            coverage: Read coverage
-
-        Returns:
-            Confidence score (0-1)
-        """
-        confidence = 0.0
-
-        # Base confidence from mismatch rate
-        if mismatch_rate >= profile.min_rate:
-            # Scale between min_rate and 0.5 (saturate at 50% mismatch)
-            confidence += min(1.0, (mismatch_rate - profile.min_rate) / (0.5 - profile.min_rate)) * 0.4
-
-        # RT stop contribution
-        if profile.rt_stop_required:
-            if rt_stop_pct >= profile.min_rt_stop_pct:
-                rt_stop_score = min(1.0, rt_stop_pct / 50.0)  # Saturate at 50%
-                confidence += rt_stop_score * 0.3
-            else:
-                # Penalize if RT stop required but not present
-                confidence *= 0.3
-        elif profile.signature_type == 'combined' and rt_stop_pct >= profile.min_rt_stop_pct:
-            # Bonus for combined-type profiles when RT stop is present
-            rt_stop_score = min(1.0, rt_stop_pct / 50.0)
-            confidence += rt_stop_score * 0.2
-
-        # Pattern specificity
-        if pattern_fraction > 0:
-            confidence += pattern_fraction * 0.2
-
-        # Position prior
-        if self.use_position_priors and position in profile.typical_positions:
-            confidence += 0.2
-
-        # Coverage contribution (higher coverage = more reliable)
-        coverage_score = min(1.0, np.log10(coverage + 1) / 4.0)  # Saturate at 10,000 reads
-        confidence *= (0.5 + 0.5 * coverage_score)  # Scale between 50-100% based on coverage
-
-        # Apply profile-specific weight
-        confidence *= profile.confidence_weight
-
-        # Cap at 1.0
-        return min(1.0, confidence)
 
     def perform_statistical_test(
         self,
@@ -571,13 +755,16 @@ class ModificationCaller:
         expected_error_rate: float = None,
     ) -> float:
         """
-        Perform binomial test to check if mismatch rate is significantly elevated.
+        Binomial test of a single count against a fixed rate.
+
+        Legacy helper; site calling uses the per-channel
+        :class:`ChannelBackground` models instead.
 
         Args:
             coverage: Total read coverage
-            mismatch_count: Number of mismatches observed
-            expected_error_rate: Expected sequencing error rate. If *None*,
-                uses ``self.background_error_rate``.
+            mismatch_count: Number of events observed
+            expected_error_rate: Expected rate. If *None*, uses
+                ``self.background_error_rate``.
 
         Returns:
             P-value from binomial test
@@ -587,7 +774,6 @@ class ModificationCaller:
         if coverage == 0:
             return 1.0
 
-        # Binomial test: is mismatch rate significantly > error rate?
         result = binomtest(
             k=int(mismatch_count),
             n=int(coverage),
@@ -597,307 +783,105 @@ class ModificationCaller:
 
         return result.pvalue
 
-    def call_modification_at_position(
+    # ------------------------------------------------------------------
+    # Detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tested_mask(signatures_df: pd.DataFrame, min_coverage: int) -> np.ndarray:
+        if signatures_df is None or signatures_df.empty or 'coverage' not in signatures_df:
+            return np.zeros(0, dtype=bool)
+        cov = pd.to_numeric(signatures_df['coverage'], errors='coerce').fillna(0)
+        return (cov >= max(1, min_coverage)).to_numpy()
+
+    def count_tests(self, signatures_df: pd.DataFrame, min_coverage: int = 50) -> int:
+        """Number of site x channel tests :meth:`call_all` performs.
+
+        Sum this over every tRNA of a sample and pass it to
+        :meth:`finalize_calls` for sample-wide FDR control.
+        """
+        tested = self._tested_mask(signatures_df, min_coverage)
+        if not tested.any():
+            return 0
+        pos1 = int((signatures_df['position'].to_numpy()[tested] == 1).sum())
+        return len(CHANNELS) * int(tested.sum()) - pos1
+
+    def _test_channels(self, signatures_df: pd.DataFrame, min_coverage: int) -> pd.DataFrame:
+        """Per-channel rate, effect gate and p-value at every tested site."""
+        tested = self._tested_mask(signatures_df, min_coverage)
+        if not tested.any():
+            return pd.DataFrame()
+        sub = signatures_df.loc[tested]
+        positions = sub['position'].astype(int).to_numpy()
+        coverage = pd.to_numeric(sub['coverage']).to_numpy(dtype=np.float64)
+        n = np.rint(coverage).astype(np.int64)
+
+        out = pd.DataFrame({'position': positions, 'coverage': coverage})
+        for c in CHANNELS:
+            col, scale = _RATE_SOURCE[c]
+            rate = (pd.to_numeric(sub[col], errors='coerce').fillna(0).to_numpy(dtype=np.float64)
+                    if col in sub.columns else np.zeros(len(sub))) * scale
+            if c == 'rt_stop':
+                rate = np.where(positions == 1, 0.0, rate)
+            out[f'rate_{c}'] = rate
+            out[f'gate_{c}'] = rate >= self.channel_thresholds[c]
+            if self.statistical_test:
+                k = np.rint(rate * n).astype(np.int64)
+                p = self.channel_backgrounds[c].sf(k, n)
+                if c == 'rt_stop':
+                    p = np.where(positions == 1, 1.0, p)
+                out[f'pvalue_{c}'] = p
+            else:
+                out[f'pvalue_{c}'] = np.nan
+        return out
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
+
+    def _rank_candidates(
         self,
         position: int,
-        signature_row: pd.Series,
-        pscm_row: Optional[pd.Series] = None,
-        ref_nt: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Call modifications at a specific position.
-
-        Args:
-            position: Position in tRNA (1-based)
-            signature_row: Row from signature DataFrame
-            pscm_row: Row from PSCM (for pattern matching)
-            ref_nt: Reference nucleotide at this position
-
-        Returns:
-            List of modification calls with confidence scores
-        """
-        calls = []
-
-        mismatch_rate = signature_row.get('mismatch_rate', 0)
-        rt_stop_pct = signature_row.get('rt_stop_pct', 0)
-        gap_rate = signature_row.get('gap_rate', 0)
-        coverage = signature_row.get('coverage', 0)
-
-        # Try each modification profile
-        for mod_name, profile in self.profiles.items():
-            # Check if mismatch rate meets minimum
-            if mismatch_rate < profile.min_rate:
+        ref_nt: Optional[str],
+        pscm_row: Optional[pd.Series],
+        gated: Dict[str, bool],
+        rt_stop_rate: float,
+    ) -> List[Tuple[ModificationProfile, float, bool]]:
+        """Compatible profiles at a site, best first: (profile, pattern_fraction, typical)."""
+        ranked = []
+        for profile in self.profiles.values():
+            if not any(gated[c] for c in _SIGNATURE_CHANNELS[profile.signature_type]):
                 continue
-
-            # Check if RT stop is required
-            if profile.rt_stop_required and rt_stop_pct < profile.min_rt_stop_pct:
+            if profile.rt_stop_required and rt_stop_rate * 100 < profile.min_rt_stop_pct:
                 continue
-
-            # Check mismatch pattern if PSCM provided
-            pattern_matches = True
-            pattern_fraction = 0.0
-            if pscm_row is not None and ref_nt is not None and profile.mismatch_pattern:
-                pattern_matches, pattern_fraction = self.match_mismatch_pattern(
-                    profile.mismatch_pattern,
-                    ref_nt,
-                    pscm_row
-                )
-                if not pattern_matches:
+            fraction = 0.0
+            if profile.mismatch_pattern and ref_nt is not None:
+                expected_ref = profile.mismatch_pattern.split('->')[0]
+                if not _same_nt(expected_ref, ref_nt):
                     continue
+                # Substitution identity is only observable when that channel fired
+                if gated['mismatch'] and pscm_row is not None:
+                    matches, fraction = self.match_mismatch_pattern(
+                        profile.mismatch_pattern, ref_nt, pscm_row)
+                    if not matches:
+                        continue
+            typical = self.use_position_priors and position in profile.typical_positions
+            ranked.append((profile, fraction, typical))
+        ranked.sort(key=lambda t: (t[2], t[1], t[0].confidence_weight), reverse=True)
+        return ranked
 
-            # Calculate confidence
-            confidence = self.calculate_confidence(
-                profile,
-                position,
-                mismatch_rate,
-                rt_stop_pct,
-                gap_rate,
-                pattern_fraction,
-                coverage
-            )
+    @staticmethod
+    def _dominant_substitution(ref_nt: Optional[str], pscm_row: Optional[pd.Series]) -> str:
+        if pscm_row is None or ref_nt is None:
+            return ''
+        counts = {f'{ref_nt}->{nt}': pscm_row.get(nt, 0)
+                  for nt in ('A', 'C', 'G', 'T') if nt != ref_nt}
+        counts = {k: v for k, v in counts.items() if v > 0}
+        return max(counts, key=counts.get) if counts else ''
 
-            # Statistical test if requested
-            pvalue = None
-            if self.statistical_test and coverage > 0:
-                mismatch_count = mismatch_rate * coverage
-                pvalue = self.perform_statistical_test(coverage, mismatch_count)
-
-                # Reduce confidence if not significant
-                if pvalue > self.alpha:
-                    confidence *= 0.5
-
-            # Only report if meets minimum confidence
-            if confidence >= self.min_confidence:
-                call = {
-                    'position': position,
-                    'modification': profile.name,
-                    'full_name': profile.full_name,
-                    'confidence': confidence,
-                    'mismatch_rate': mismatch_rate,
-                    'rt_stop_pct': rt_stop_pct,
-                    'gap_rate': gap_rate,
-                    'coverage': coverage,
-                    'pattern_fraction': pattern_fraction,
-                    'pvalue': pvalue,
-                    'in_typical_position': position in profile.typical_positions,
-                    'fold_change': (mismatch_rate / self.background_error_rate
-                                    if self.background_error_rate > 0
-                                    else np.nan),
-                    'background_error_rate': self.background_error_rate,
-                }
-                calls.append(call)
-
-        return calls
-
-    def call_modifications_for_trna(
-        self,
-        trna_name: str,
-        signatures_df: pd.DataFrame,
-        pscm_df: Optional[pd.DataFrame] = None,
-        reference_seq: Optional[str] = None
-    ) -> pd.DataFrame:
-        """
-        Call modifications for a single tRNA.
-
-        Args:
-            trna_name: Name of the tRNA
-            signatures_df: RT signature DataFrame from RTSignatureAnalyzer
-            pscm_df: Position-Specific Count Matrix (optional, for pattern matching)
-            reference_seq: Reference sequence (optional, for pattern matching)
-
-        Returns:
-            DataFrame with modification calls
-        """
-        all_calls = []
-
-        # Process each position with a signature
-        for _, row in signatures_df.iterrows():
-            if not row.get('has_signature', False):
-                continue
-
-            position = int(row['position'])
-
-            # Get PSCM row and reference nt if available
-            pscm_row = None
-            ref_nt = None
-            if pscm_df is not None:
-                pscm_row = pscm_df.iloc[position - 1]  # Convert to 0-based
-            if reference_seq is not None and position <= len(reference_seq):
-                ref_nt = reference_seq[position - 1]  # Convert to 0-based
-
-            # Call modifications at this position
-            position_calls = self.call_modification_at_position(
-                position, row, pscm_row, ref_nt
-            )
-
-            for call in position_calls:
-                call['trna_name'] = trna_name
-                all_calls.append(call)
-
-        if not all_calls:
-            return pd.DataFrame()
-
-        # Convert to DataFrame and sort by confidence
-        calls_df = pd.DataFrame(all_calls)
-        calls_df = calls_df.sort_values(['confidence', 'mismatch_rate'], ascending=False)
-
-        return calls_df
-
-    def call_modifications_for_all_trnas(
-        self,
-        rt_signature_results: Dict[str, Dict[str, pd.DataFrame]],
-        pscm_dict: Optional[Dict[str, pd.DataFrame]] = None,
-        reference_sequences: Optional[Dict[str, str]] = None
-    ) -> pd.DataFrame:
-        """
-        Call modifications for all tRNAs.
-
-        Args:
-            rt_signature_results: Results from RTSignatureAnalyzer.analyze_all_trnas()
-            pscm_dict: Dictionary of tRNA -> PSCM DataFrame
-            reference_sequences: Dictionary of tRNA -> sequence
-
-        Returns:
-            Combined DataFrame with all modification calls
-        """
-        all_calls = []
-
-        for trna_name, results in rt_signature_results.items():
-            signatures_df = results['signatures']
-
-            pscm_df = pscm_dict.get(trna_name) if pscm_dict else None
-            ref_seq = reference_sequences.get(trna_name) if reference_sequences else None
-
-            trna_calls = self.call_modifications_for_trna(
-                trna_name,
-                signatures_df,
-                pscm_df,
-                ref_seq
-            )
-
-            if not trna_calls.empty:
-                all_calls.append(trna_calls)
-
-        if not all_calls:
-            return pd.DataFrame()
-
-        combined_df = pd.concat(all_calls, ignore_index=True)
-        return combined_df
-
-    def filter_by_confidence(
-        self,
-        calls_df: pd.DataFrame,
-        min_confidence: float
-    ) -> pd.DataFrame:
-        """
-        Filter modification calls by confidence threshold.
-
-        Args:
-            calls_df: DataFrame with modification calls
-            min_confidence: Minimum confidence threshold
-
-        Returns:
-            Filtered DataFrame
-        """
-        return calls_df[calls_df['confidence'] >= min_confidence].copy()
-
-    def call_novel_positions(
-        self,
-        trna_name: str,
-        signatures_df: pd.DataFrame,
-        pscm_df: Optional[pd.DataFrame] = None,
-        reference_seq: Optional[str] = None,
-        min_coverage: int = 50,
-    ) -> pd.DataFrame:
-        """
-        Identify novel modification candidates at signature positions.
-
-        Iterates positions where ``has_signature=True`` and skips those that
-        already matched a known profile via :meth:`call_modification_at_position`.
-        Remaining positions with statistically significant mismatch rates
-        are reported as ``novel_candidate``.
-
-        Args:
-            trna_name: Name of the tRNA.
-            signatures_df: RT signature DataFrame (must have ``has_signature``).
-            pscm_df: Position-Specific Count Matrix DataFrame.
-            reference_seq: Reference sequence string.
-            min_coverage: Minimum read coverage to consider a position.
-
-        Returns:
-            DataFrame of novel modification candidates with dominant mutation
-            pattern and statistical evidence.
-        """
-        all_calls = []
-
-        for _, row in signatures_df.iterrows():
-            if not row.get('has_signature', False):
-                continue
-
-            position = int(row['position'])
-            coverage = row.get('coverage', 0)
-            if coverage < min_coverage:
-                continue
-
-            # Check if any known profile matches
-            pscm_row = None
-            ref_nt = None
-            if pscm_df is not None:
-                pos_idx = position - 1
-                if 0 <= pos_idx < len(pscm_df):
-                    pscm_row = pscm_df.iloc[pos_idx]
-            if reference_seq is not None and position <= len(reference_seq):
-                ref_nt = reference_seq[position - 1]
-
-            known_calls = self.call_modification_at_position(
-                position, row, pscm_row, ref_nt
-            )
-            if known_calls:
-                continue  # Already matched a known profile
-
-            # Statistical test
-            mismatch_rate = row.get('mismatch_rate', 0)
-            mismatch_count = mismatch_rate * coverage
-            pvalue = self.perform_statistical_test(
-                int(coverage), int(mismatch_count)
-            )
-            if pvalue > self.alpha:
-                continue  # Not significant
-
-            # Extract dominant mutation pattern
-            dominant_pattern = ''
-            if pscm_row is not None and ref_nt is not None:
-                nt_counts = {}
-                for nt in ['A', 'C', 'G', 'T']:
-                    if nt != ref_nt:
-                        cnt = pscm_row.get(nt, 0)
-                        if cnt > 0:
-                            nt_counts[f'{ref_nt}->{nt}'] = cnt
-                if nt_counts:
-                    dominant_pattern = max(nt_counts, key=nt_counts.get)
-
-            all_calls.append({
-                'trna_name': trna_name,
-                'position': position,
-                'modification': 'novel_candidate',
-                'full_name': 'unknown modification',
-                'confidence': min(1.0, mismatch_rate * 2),
-                'mismatch_rate': mismatch_rate,
-                'rt_stop_pct': row.get('rt_stop_pct', 0),
-                'gap_rate': row.get('gap_rate', 0),
-                'coverage': coverage,
-                'pattern_fraction': 0.0,
-                'pvalue': pvalue,
-                'in_typical_position': False,
-                'dominant_pattern': dominant_pattern,
-                'source': 'novel_candidate',
-                'fold_change': (mismatch_rate / self.background_error_rate
-                                if self.background_error_rate > 0
-                                else np.nan),
-                'background_error_rate': self.background_error_rate,
-            })
-
-        return pd.DataFrame(all_calls) if all_calls else pd.DataFrame()
+    # ------------------------------------------------------------------
+    # Calling
+    # ------------------------------------------------------------------
 
     def call_all(
         self,
@@ -908,56 +892,111 @@ class ModificationCaller:
         discover_novel: bool = False,
         min_coverage: int = 50,
         known_mods_df: Optional[pd.DataFrame] = None,
+        finalize: bool = True,
     ) -> pd.DataFrame:
         """
-        Run both known profile matching and optional novel discovery.
+        Call modification sites for one tRNA: one row per site.
 
-        Wrapper that calls :meth:`call_modifications_for_trna` for known
-        profiles and :meth:`call_novel_positions` for novel candidates,
-        then returns the combined results.
+        Sites with a rate at or above any channel threshold are candidates.
+        Each gets a ranked list of compatible modification profiles
+        (``candidates``). The top one becomes ``modification`` only when a
+        typical position or a specific substitution pattern supports it
+        (``identity_support``); otherwise the site is ``novel_candidate``.
+        Detected sites are always reported -- identity never removes a
+        detection. When *known_mods_df* (MODOMICS, ``linear_position``) is
+        given, novel candidates at a known position are relabelled with that
+        modification (``source='known_modomics'``).
 
-        When *known_mods_df* is provided (a DataFrame of MODOMICS-derived
-        modifications with a ``linear_position`` column), novel candidates
-        whose position matches a known modification are relabelled with the
-        known modification name and their confidence is boosted.
+        With ``finalize=True`` the FDR family is this tRNA. For sample-wide
+        FDR (the pipeline), pass ``finalize=False`` for every tRNA, concat,
+        and call :meth:`finalize_calls` with the summed :meth:`count_tests`.
 
         Args:
             trna_name: Name of the tRNA.
-            signatures_df: RT signature DataFrame.
+            signatures_df: RT signature DataFrame (``position``,
+                ``coverage``, ``mismatch_rate`` [substitutions],
+                ``gap_rate``, ``rt_stop_pct``).
             pscm_df: Position-Specific Count Matrix DataFrame.
             reference_seq: Reference sequence string.
-            discover_novel: If True, also run novel modification discovery.
-            min_coverage: Minimum coverage for novel discovery.
+            discover_novel: Deprecated, ignored. Sites without a supported
+                identity are always reported as ``novel_candidate``;
+                dropping them would discard detected signal.
+            min_coverage: Minimum coverage for a site to be tested.
             known_mods_df: DataFrame with ``linear_position`` and
                 ``modification_short_name`` columns from MODOMICS.
+            finalize: Apply FDR, channel firing and confidence now.
 
         Returns:
-            Combined DataFrame with ``source`` column ('known',
-            'known_modomics', or 'novel_candidate').
+            DataFrame with ``source`` column ('known', 'known_modomics', or
+            'novel_candidate').
         """
-        known_df = self.call_modifications_for_trna(
-            trna_name, signatures_df, pscm_df, reference_seq
-        )
-        if not known_df.empty:
-            known_df['source'] = 'known'
+        tested = self._test_channels(signatures_df, min_coverage)
+        if tested.empty:
+            return pd.DataFrame()
+        gate_cols = [f'gate_{c}' for c in CHANNELS]
+        sites = tested[tested[gate_cols].any(axis=1)]
+        if sites.empty:
+            return pd.DataFrame()
 
-        if discover_novel:
-            novel_df = self.call_novel_positions(
-                trna_name, signatures_df, pscm_df, reference_seq,
-                min_coverage=min_coverage,
-            )
-            if not novel_df.empty and not known_df.empty:
-                combined = pd.concat([known_df, novel_df], ignore_index=True)
-            elif not novel_df.empty:
-                combined = novel_df
+        correct_nt = (signatures_df.set_index('position')['correct_nt']
+                      if 'correct_nt' in signatures_df.columns else None)
+
+        rows = []
+        for rec in sites.to_dict('records'):
+            position = int(rec['position'])
+            ref_nt = None
+            if reference_seq is not None and position <= len(reference_seq):
+                ref_nt = reference_seq[position - 1].upper()
+            elif correct_nt is not None and position in correct_nt.index:
+                ref_nt = str(correct_nt.loc[position]).upper()
+            pscm_row = None
+            if pscm_df is not None and 0 <= position - 1 < len(pscm_df):
+                pscm_row = pscm_df.iloc[position - 1]
+
+            gated = {c: bool(rec[f'gate_{c}']) for c in CHANNELS}
+            ranked = self._rank_candidates(position, ref_nt, pscm_row, gated,
+                                           rec['rate_rt_stop'])
+            fraction, typical, support = 0.0, False, 'none'
+            if ranked:
+                top, fraction, typical = ranked[0]
+                specific = (fraction > 0 and bool(top.mismatch_pattern)
+                            and not top.mismatch_pattern.endswith('->any'))
+                support = ('+'.join(lbl for lbl, ok in
+                                    (('position', typical), ('pattern', specific)) if ok)
+                           or 'ref_nt_only')
+            # A label needs evidence beyond reference-nucleotide compatibility;
+            # otherwise the site is detected but its identity is unresolved
+            if support in ('none', 'ref_nt_only'):
+                modification, full_name, source = (
+                    'novel_candidate', 'unknown modification', 'novel_candidate')
             else:
-                combined = known_df
-        else:
-            combined = known_df
+                modification, full_name, source = top.name, top.full_name, 'known'
+
+            row = dict(rec)
+            row.update({
+                'trna_name': trna_name,
+                'modification': modification,
+                'full_name': full_name,
+                'candidates': ';'.join(p.name for p, _, _ in ranked),
+                'n_candidates': len(ranked),
+                'identity_support': support,
+                'pattern_fraction': fraction,
+                'in_typical_position': typical,
+                'mismatch_rate': rec['rate_mismatch'],
+                'gap_rate': rec['rate_deletion'],
+                'rt_stop_pct': rec['rate_rt_stop'] * 100,
+                'dominant_pattern': (self._dominant_substitution(ref_nt, pscm_row)
+                                     if gated['mismatch'] else ''),
+                'source': source,
+            })
+            rows.append(row)
+
+        if not rows:
+            return pd.DataFrame()
+        calls = pd.DataFrame(rows)
 
         # --- MODOMICS-guided relabelling of novel candidates ---
-        if (not combined.empty
-                and known_mods_df is not None
+        if (known_mods_df is not None
                 and not known_mods_df.empty
                 and 'linear_position' in known_mods_df.columns):
             # Build a lookup: linear_position → (short_name, full_name)
@@ -977,29 +1016,127 @@ class ModificationCaller:
                 else:
                     pos_to_mod[lp] = (short, full)
 
-            novel_mask = combined['source'] == 'novel_candidate'
-            for idx in combined.index[novel_mask]:
-                pos = int(combined.at[idx, 'position'])
+            novel_mask = calls['source'] == 'novel_candidate'
+            for idx in calls.index[novel_mask]:
+                pos = int(calls.at[idx, 'position'])
                 if pos in pos_to_mod:
                     short_name, full_name = pos_to_mod[pos]
-                    combined.at[idx, 'modification'] = short_name
-                    combined.at[idx, 'full_name'] = full_name
-                    combined.at[idx, 'source'] = 'known_modomics'
-                    # Boost confidence for MODOMICS-confirmed positions
-                    combined.at[idx, 'confidence'] = min(
-                        1.0, combined.at[idx, 'confidence'] * 1.5
-                    )
-                    combined.at[idx, 'in_typical_position'] = True
+                    calls.at[idx, 'modification'] = short_name
+                    calls.at[idx, 'full_name'] = full_name
+                    calls.at[idx, 'source'] = 'known_modomics'
+                    calls.at[idx, 'in_typical_position'] = True
 
-        if not combined.empty:
-            # Apply FDR correction across all tested positions
-            if 'pvalue' in combined.columns:
-                pvals = combined['pvalue'].fillna(1.0).values
-                combined['fdr_significant'] = benjamini_hochberg_fdr(
-                    pvals, alpha=self.alpha
-                )
+        if finalize:
+            return self.finalize_calls(
+                calls, n_tests=self.count_tests(signatures_df, min_coverage))
+        return calls
 
-        return combined
+    def finalize_calls(self, calls: pd.DataFrame, n_tests: int) -> pd.DataFrame:
+        """Apply per-channel FDR, decide which channels fired, score confidence.
+
+        Args:
+            calls: Unfinalised output of :meth:`call_all` (``finalize=False``),
+                possibly concatenated across tRNAs of one sample.
+            n_tests: Size of the FDR family (summed :meth:`count_tests`).
+
+        Returns:
+            Called sites only (at least one channel fired), sorted by
+            confidence. Per-channel columns: ``pvalue_*``, ``qvalue_*``,
+            ``fold_change_*``; plus ``channels_fired``, ``dominant_channel``,
+            ``pvalue`` (Bonferroni over channels, for replicate Fisher
+            combination), ``fold_change`` / ``background_error_rate`` of the
+            dominant channel, ``confidence``, ``channel_prior_factor`` and
+            ``unexpected_channel``.
+        """
+        if calls.empty:
+            return calls
+        df = calls.reset_index(drop=True).copy()
+        gates = np.column_stack([df[f'gate_{c}'].to_numpy(bool) for c in CHANNELS])
+
+        if self.statistical_test:
+            pvals = np.column_stack([df[f'pvalue_{c}'].to_numpy(np.float64)
+                                     for c in CHANNELS])
+            q = _bh_qvalues(pvals.ravel(), n_tests).reshape(pvals.shape)
+            for i, c in enumerate(CHANNELS):
+                df[f'qvalue_{c}'] = q[:, i]
+            fired = gates & (q < self.alpha)
+            df['pvalue'] = np.minimum(1.0, pvals.min(axis=1) * len(CHANNELS))
+        else:
+            for c in CHANNELS:
+                df[f'qvalue_{c}'] = np.nan
+            fired = gates
+            df['pvalue'] = None
+
+        keep = fired.any(axis=1)
+        df, fired = df[keep].reset_index(drop=True), fired[keep]
+        if df.empty:
+            return pd.DataFrame()
+
+        rates = np.column_stack([df[f'rate_{c}'].to_numpy(np.float64) for c in CHANNELS])
+        thresholds = np.array([self.channel_thresholds[c] for c in CHANNELS])
+        means = np.array([self.channel_backgrounds[c].mean for c in CHANNELS])
+
+        for i, c in enumerate(CHANNELS):
+            df[f'fold_change_{c}'] = (rates[:, i] / means[i] if means[i] > 0 else np.nan)
+
+        # Dominant channel: strongest fired effect relative to its threshold
+        rel = np.where(fired, rates / thresholds, -np.inf)
+        dom = rel.argmax(axis=1)
+        df['channels_fired'] = ['+'.join(c for c, f in zip(CHANNELS, row) if f)
+                                for row in fired]
+        df['n_channels_fired'] = fired.sum(axis=1)
+        df['dominant_channel'] = [CHANNELS[i] for i in dom]
+        df['fold_change'] = [rates[j, i] / means[i] if means[i] > 0 else np.nan
+                             for j, i in enumerate(dom)]
+        df['background_error_rate'] = means[dom]
+        df['fdr_significant'] = bool(self.statistical_test)
+
+        # Confidence: ranking score only. Effect size of the strongest fired
+        # channel, agreement across channels, position prior, coverage.
+        effect = np.where(fired, np.clip((rates - thresholds) / (0.5 - thresholds), 0, 1), 0)
+        base = 0.2 + 0.4 * effect.max(axis=1)
+        base += 0.1 * np.minimum(fired.sum(axis=1) - 1, 2)
+        base += 0.2 * df['in_typical_position'].astype(bool).to_numpy()
+        coverage_score = np.minimum(1.0, np.log10(df['coverage'].to_numpy(np.float64) + 1) / 4.0)
+        base *= 0.5 + 0.5 * coverage_score
+
+        # Channel priors scale confidence (never detection): signal in the
+        # enzyme's usual channel up-weights, a rarely used channel down-weights
+        if self.channel_priors:
+            weights = np.array([self.channel_priors['weights'][c] for c in CHANNELS])
+            fired_w = np.where(fired, weights, 0.0).max(axis=1)
+            factor = 1.0 + (fired_w - 1.0 / len(CHANNELS))
+            df['unexpected_channel'] = fired_w < UNEXPECTED_CHANNEL_WEIGHT
+        else:
+            factor = np.ones(len(df))
+            df['unexpected_channel'] = False
+        df['channel_prior_factor'] = factor
+        df['confidence'] = np.minimum(1.0, base * factor)
+
+        df = df[base >= self.min_confidence]
+        df = df.drop(columns=[f'{p}_{c}' for p in ('gate', 'rate') for c in CHANNELS])
+
+        # Provenance: which RT produced the data (None if unrecorded)
+        df['rt_enzyme'] = self.rt_enzyme
+        df['rt_temp'] = self.rt_temp
+        return df.sort_values('confidence', ascending=False).reset_index(drop=True)
+
+    def filter_by_confidence(
+        self,
+        calls_df: pd.DataFrame,
+        min_confidence: float
+    ) -> pd.DataFrame:
+        """
+        Filter modification calls by confidence threshold.
+
+        Args:
+            calls_df: DataFrame with modification calls
+            min_confidence: Minimum confidence threshold
+
+        Returns:
+            Filtered DataFrame
+        """
+        return calls_df[calls_df['confidence'] >= min_confidence].copy()
 
     def summarize_modifications(
         self,

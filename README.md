@@ -186,7 +186,9 @@ run_qc_report: true
 run_modification_analysis: false
 organism: "ecoli"                      # ecoli, human, or mouse
 no_modomics: false                     # true to skip MODOMICS lookup
-discover_novel_modifications: false
+rt_enzyme: null                        # RT used: Maxima, SSIV, TGIRT, Indura (null = unknown)
+rt_temp: null                          # RT temperature in C (null = unknown)
+discover_novel_modifications: false    # deprecated, ignored
 modification_min_coverage: 50
 modification_alpha: 0.01
 

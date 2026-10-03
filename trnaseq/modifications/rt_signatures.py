@@ -184,7 +184,10 @@ class RTSignatureAnalyzer:
         """
         Calculate per-position mismatch rates from PSCM.
 
-        Mismatch rate = (total_coverage - correct_nt_count) / total_coverage
+        Mismatch rate = (total_coverage - correct_nt_count - gap_count) / total_coverage
+
+        Substitutions only: deletions are a separate detection channel
+        (:meth:`calculate_gap_rates`) and must not leak into this one.
 
         Args:
             pscm_df: DataFrame with PSCM data (positions × nucleotides)
@@ -199,6 +202,8 @@ class RTSignatureAnalyzer:
 
         # Calculate total coverage per position
         coverage = pscm_df.sum(axis=1).values
+        gap_counts = (pscm_df['-'].values if '-' in pscm_df.columns
+                      else np.zeros(len(pscm_df)))
 
         # Determine correct nucleotide at each position
         results = []
@@ -211,7 +216,7 @@ class RTSignatureAnalyzer:
                 continue
 
             correct_count = pscm_df.loc[pos, correct_nt]
-            mismatch_count = coverage[pos] - correct_count
+            mismatch_count = coverage[pos] - correct_count - gap_counts[pos]
             mismatch_rate = mismatch_count / coverage[pos]
 
             results.append({

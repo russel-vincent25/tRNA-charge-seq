@@ -39,8 +39,14 @@ def add_modifications_parser(subparsers):
                         help='Number of parallel jobs (default: 4)')
     parser.add_argument('--no-modomics', action='store_true',
                         help='Skip MODOMICS API, use fallback CSV only')
+    parser.add_argument('--rt-enzyme', default=None,
+                        help='Reverse transcriptase used (e.g. Maxima, SSIV, '
+                             'TGIRT, Indura); omit if unknown')
+    parser.add_argument('--rt-temp', type=float, default=None,
+                        help='RT incubation temperature (C); omit if unknown')
     parser.add_argument('--discover-novel', action='store_true',
-                        help='Enable novel modification discovery (default: off)')
+                        help='Deprecated, ignored: sites without a supported '
+                             'identity are always reported as novel_candidate')
     parser.add_argument('--csv', action='store_true',
                         help='Also write CSV copies (default: parquet only)')
     parser.set_defaults(func=run_modifications)
@@ -55,7 +61,10 @@ def run_modifications(args):
     from trnaseq.modifications.positional import PositionalExtractor
     from trnaseq.modifications.modomics import MODOMICSAnnotator
     from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
-    from trnaseq.modifications.modification_caller import ModificationCaller
+    from trnaseq.modifications.modification_caller import (
+        ModificationCaller,
+        estimate_channel_backgrounds,
+    )
 
     json_dir = Path(args.json_dir)
     output_dir = Path(args.output_dir)
@@ -65,10 +74,10 @@ def run_modifications(args):
     print(f"Reference:   {args.reference}")
     print(f"Output:      {output_dir}")
     print(f"Organism:    {args.organism}")
+    print(f"RT enzyme:   {args.rt_enzyme or 'unrecorded'} @ {args.rt_temp if args.rt_temp is not None else '?'} C")
     print(f"Min coverage: {args.min_coverage}")
     print(f"Jobs:        {args.n_jobs}")
     print(f"MODOMICS:    {'fallback only' if args.no_modomics else 'API + fallback'}")
-    print(f"Novel:       {'enabled' if args.discover_novel else 'disabled'}")
     print()
 
     # Step 1: Discover sample names
@@ -109,10 +118,20 @@ def run_modifications(args):
         verbose=False
     )
     analyzer.load_reference(args.reference)
-    caller = ModificationCaller(organism=args.organism)
 
     for sample_name, pscm_dict in all_pscm.items():
         print(f"\nProcessing {sample_name} ({len(pscm_dict)} tRNAs)...")
+
+        # Per-channel null for this sample
+        backgrounds = estimate_channel_backgrounds(
+            pscm_dict, extractor.ref_dict, min_coverage=args.min_coverage,
+        )
+        caller = ModificationCaller(
+            organism=args.organism,
+            rt_enzyme=args.rt_enzyme,
+            rt_temp=args.rt_temp,
+            channel_backgrounds=backgrounds,
+        )
 
         # Convert to analyzer format
         pscm_dfs = analyzer.load_pscm_from_positional(pscm_dict)
@@ -151,8 +170,9 @@ def run_modifications(args):
         pscm_df_stacked = pd.DataFrame(pscm_rows)
         _save_df(pscm_df_stacked, sample_dir / 'pscm', args.csv)
 
-        # Modification calling
+        # Modification calling (FDR over all site x channel tests in the sample)
         all_mod_calls = []
+        n_tests = 0
         for trna_name, pscm_df in pscm_dfs.items():
             raw_mat = pscm_dict.get(trna_name)
             rt_stops = raw_mat[:, 7] if raw_mat is not None else None
@@ -171,14 +191,18 @@ def run_modifications(args):
                 trna_name, annotated, pscm_df, ref_seq,
                 discover_novel=args.discover_novel,
                 min_coverage=args.min_coverage,
+                finalize=False,
             )
+            n_tests += caller.count_tests(annotated, args.min_coverage)
 
             if not mod_calls.empty:
                 mod_calls['sample'] = sample_name
                 all_mod_calls.append(mod_calls)
 
-        if all_mod_calls:
-            calls_df = pd.concat(all_mod_calls, ignore_index=True)
+        calls_df = (caller.finalize_calls(
+            pd.concat(all_mod_calls, ignore_index=True), n_tests)
+            if all_mod_calls else pd.DataFrame())
+        if not calls_df.empty:
             _save_df(calls_df, sample_dir / 'modification_calls', args.csv)
             print(f"  {len(calls_df)} modification calls")
         else:

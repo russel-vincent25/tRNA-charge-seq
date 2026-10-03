@@ -104,11 +104,13 @@ try:
     from trnaseq.modifications.positional import PositionalExtractor
     from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
     from trnaseq.modifications.modification_caller import (
+        CHANNELS,
         ModificationCaller,
-        estimate_background_error_rate,
+        estimate_channel_backgrounds,
         ReplicateAggregator,
     )
     from trnaseq.modifications.modomics import MODOMICSAnnotator
+    from trnaseq.modifications.channel_priors import load_channel_priors
     MODIFICATIONS_AVAILABLE = True
 except ImportError:
     MODIFICATIONS_AVAILABLE = False
@@ -254,26 +256,6 @@ def _save_df(df, path_stem, write_csv=False):
         return
     if write_csv:
         df.to_csv(f'{path_stem}.csv', index=False)
-
-
-def _pool_pscm_dicts(all_pscm):
-    """Sum PSCM arrays across all samples for background estimation.
-
-    Args:
-        all_pscm: {sample_name: {trna_name: ndarray(ref_len, 8)}}
-
-    Returns:
-        {trna_name: ndarray(ref_len, 8)} — element-wise sum across samples.
-    """
-    pooled = {}
-    for sample_pscm in all_pscm.values():
-        for trna_name, mat in sample_pscm.items():
-            if trna_name not in pooled:
-                pooled[trna_name] = mat.copy()
-            else:
-                if pooled[trna_name].shape == mat.shape:
-                    pooled[trna_name] += mat
-    return pooled
 
 
 class PreprocessingPipeline:
@@ -475,6 +457,12 @@ class PreprocessingPipeline:
                 report.add(CheckResult(
                     "organism (stage 6)", CheckStatus.PASS,
                     org, group=group))
+            if not self.config.get('rt_enzyme'):
+                report.add(CheckResult(
+                    "rt_enzyme (stage 6)", CheckStatus.WARN,
+                    "rt_enzyme not set — RT provenance unrecorded; "
+                    "modification calling will be enzyme-agnostic",
+                    group=group))
 
         # Stage 7: needs abundance_control
         if '7' in stages and self.config.get('run_abundance_analysis', False):
@@ -1619,6 +1607,11 @@ class PreprocessingPipeline:
             synthetic_prefixes = tuple(
                 self.config.get('synthetic_tRNA_prefixes', ['Synthetic_'])
             )
+            # RT provenance: null = unknown -> enzyme-agnostic calling
+            rt_enzyme = self.config.get('rt_enzyme')
+            rt_temp = self.config.get('rt_temp')
+            signature_overrides = self.config.get(
+                'modification_signature_overrides')
 
             json_dir = self.project_dir / 'data' / self.dir_dict['align_dir']
             output_dir = self._ensure_dir('results', 'modifications')
@@ -1628,7 +1621,11 @@ class PreprocessingPipeline:
             self.log(f"  Reference: {ref_fasta}")
             self.log(f"  Organism: {organism}")
             self.log(f"  Samples: {len(sample_names)}")
-            self.log(f"  Novel discovery: {discover_novel}")
+            if discover_novel:
+                self.log("  discover_novel_modifications is deprecated: sites "
+                         "without a supported identity are always reported")
+            self.log(f"  RT enzyme: {rt_enzyme if rt_enzyme else 'unrecorded'}"
+                     f" @ {rt_temp if rt_temp is not None else '?'} C")
 
             # ==== Phase 1: PSCM extraction ====
             self.log("  Phase 1/7: Extracting PSCMs...")
@@ -1638,14 +1635,24 @@ class PreprocessingPipeline:
             )
 
             # ==== Phase 2: Background estimation ====
-            self.log("  Phase 2/7: Estimating background error rate...")
-            pooled = _pool_pscm_dicts(all_pscm)
-            bg_rate, bg_source = estimate_background_error_rate(
-                pooled, extractor.ref_dict,
-                synthetic_prefixes=synthetic_prefixes,
-                min_coverage=min_coverage,
-            )
-            self.log(f"  Background error rate: {bg_rate:.5f} (source: {bg_source})")
+            # One beta-binomial null per channel per sample: null rates and
+            # overdispersion differ by channel, depth and batch.
+            self.log("  Phase 2/7: Estimating per-channel backgrounds per sample...")
+            sample_backgrounds = {
+                snu: estimate_channel_backgrounds(
+                    pscm_dict, extractor.ref_dict,
+                    synthetic_prefixes=synthetic_prefixes,
+                    min_coverage=min_coverage,
+                )
+                for snu, pscm_dict in all_pscm.items()
+            }
+            for c in CHANNELS:
+                fits = [bg[c] for bg in sample_backgrounds.values()]
+                if fits:
+                    self.log(
+                        f"    {c:<8} mean {np.median([f.mean for f in fits]):.2e}, "
+                        f"rho {np.median([f.rho for f in fits]):.2e} "
+                        f"(median over samples; source: {fits[0].source})")
 
             # MODOMICS
             annotator = MODOMICSAnnotator(organism)
@@ -1658,16 +1665,29 @@ class PreprocessingPipeline:
                 min_coverage=min_coverage, verbose=False
             )
             analyzer.load_reference(ref_fasta)
-            caller = ModificationCaller(
-                organism=organism,
-                background_error_rate=bg_rate,
-                alpha=mod_alpha,
-            )
+            def make_caller(backgrounds):
+                return ModificationCaller(
+                    organism=organism,
+                    alpha=mod_alpha,
+                    rt_enzyme=rt_enzyme,
+                    rt_temp=rt_temp,
+                    signature_overrides=signature_overrides,
+                    channel_backgrounds=backgrounds,
+                )
+
+            cp = load_channel_priors(rt_enzyme, rt_temp)
+            if cp:
+                self.log(f"  Channel priors: {cp['rt_enzyme']}"
+                         f" @ {cp['rt_temp'] or 'pooled'} C "
+                         f"(n={cp['n_signal_obs']}) {cp['weights']}")
+            else:
+                self.log("  Channel priors: none (enzyme-agnostic 'combined')")
 
             per_sample_calls = {}
             sample_call_counts = []
 
             for sample_name, pscm_dict in all_pscm.items():
+                caller = make_caller(sample_backgrounds[sample_name])
                 pscm_dfs = analyzer.load_pscm_from_positional(pscm_dict)
 
                 rt_profile = extractor.compute_rt_profile(pscm_dict)
@@ -1684,8 +1704,10 @@ class PreprocessingPipeline:
                     list(pscm_dfs.keys())
                 )
 
-                # Call modifications for each tRNA in this sample
+                # Call modifications for each tRNA in this sample; FDR is
+                # applied once over all site x channel tests in the sample
                 sample_calls = []
+                n_tests = 0
                 for trna_name, pscm_df in pscm_dfs.items():
                     rt_counts = pscm_dict[trna_name][:, 7]
                     analysis = analyzer.analyze_trna_with_actual_stops(
@@ -1712,12 +1734,17 @@ class PreprocessingPipeline:
                         discover_novel=discover_novel,
                         min_coverage=min_coverage,
                         known_mods_df=known_mods_for_trna,
+                        finalize=False,
                     )
+                    n_tests += caller.count_tests(
+                        analysis['signatures'], min_coverage)
                     if not calls_df.empty:
                         sample_calls.append(calls_df)
 
-                if sample_calls:
-                    combined = pd.concat(sample_calls, ignore_index=True)
+                combined = (caller.finalize_calls(
+                    pd.concat(sample_calls, ignore_index=True), n_tests)
+                    if sample_calls else pd.DataFrame())
+                if not combined.empty:
                     per_sample_calls[sample_name] = combined
                     _save_df(combined, sample_dir / 'modification_calls')
                     sample_call_counts.append(len(combined))
@@ -1794,14 +1821,24 @@ class PreprocessingPipeline:
                     not sc.empty and 'fold_change' in sc.columns
                 ) else np.nan
 
-                summary_rows.append({
+                bgs = sample_backgrounds.get(snu, {})
+                row = {
                     'sample_name_unique': snu,
                     'total_calls': n_total,
                     'consensus_calls': n_consensus,
                     'mean_fold_change': round(mean_fc, 3) if not np.isnan(mean_fc) else np.nan,
-                    'background_error_rate': bg_rate,
-                    'bg_source': bg_source,
-                })
+                    # Substitution-channel null mean, kept for the report's
+                    # synthetic-control reference line
+                    'background_error_rate': (bgs['mismatch'].mean
+                                              if bgs else np.nan),
+                    'bg_source': bgs['mismatch'].source if bgs else None,
+                    'rt_enzyme': rt_enzyme,
+                    'rt_temp': rt_temp,
+                }
+                for c in CHANNELS:
+                    row[f'bg_mean_{c}'] = bgs[c].mean if bgs else np.nan
+                    row[f'bg_rho_{c}'] = bgs[c].rho if bgs else np.nan
+                summary_rows.append(row)
 
             summary_df = pd.DataFrame(summary_rows)
             summary_df.to_csv(output_dir / 'modification_summary.csv', index=False)
