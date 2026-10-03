@@ -1,7 +1,8 @@
 # Design: channel-aware calling and site identity (CHANNEL_FIX_SPEC change 4)
 
 **Status (2026-10-03):** detection (change 4, §1–§5), site identity (change 4b, §6–§7) and the
-novel-site lookup fixes and table (§8) are implemented. The novel-site predictor (§9) is a
+novel-site lookup fixes and table (§8) are implemented. Prior art and two corrections from the
+2026 RT literature are in §12. The novel-site predictor (§9) is a
 prototype. The N-masked-reference fix (§8), change 5 (§10) and change 6 (§11) are done; every item in the spec's "Done when" list is met.
 
 Evidence comes from the 2024-06-19 four-RT run (4 enzymes × 3 temperatures × 3 replicates,
@@ -298,7 +299,8 @@ one row per unexplained site across samples. It records:
 The modification report has a matching **Novel Sites** panel. On the four-RT run, 13 sites remain:
 
 - **Within 3 nt of a known modification:** deletions 2–3 nt from ms2i6A37 / m1G38 on Maxima and
-  SSIV, i.e. the signal smears beyond the offsets used for identity.
+  SSIV. ⚠ **Superseded by §12:** this is homopolymer indel-placement ambiguity, not a signal smear —
+  the modification lies inside the same homopolymer run as the called deletion.
 - **Real MODOMICS gaps:** e.g. `Pro-TGG`:34, probably cmo5U34, absent from the borrowed Pro-CGG
   map.
 - **Single TGIRT RT stops** at about 120× coverage, probably noise.
@@ -419,6 +421,141 @@ decision D, every assertion is enzyme-agnostic:
 - **It holds on the full dataset.** With `TRNASEQ_FOUR_RT_DIR` set, the recall test repeats on all
   49 tRNAs; it passed in 30 s. The spec's ordering ("Indura most, TGIRT least") is not asserted.
   It is a property of the baseline, not of the fix, and the Maxima/TGIRT gap was 3% (§3).
+
+## 12. Prior art: the channel model is published, and our offset rule is confirmed
+
+Added 2026-10-03 after reading four papers (PDFs supplied by RV; metadata and DOIs via PubMed).
+**The channel-aware model is not novel — it is the field's standard, and this pipeline was behind
+it.** What follows is what each paper settles, and the two places our implementation disagreed.
+
+| paper | channels scored | temperature | enzymes | organism | replicates |
+|---|---|---|---|---|---|
+| **Nakano et al. 2025**, *Nat Commun* 16:1047, [doi](https://doi.org/10.1038/s41467-025-56348-1) — the primary paper | misincorporation + RT stop | 25/37/42/55 °C x 1/2/16 h, **Induro only** | Induro vs TGIRT, **42 °C only** | human, mouse | n = 2 technical (temp series) |
+| **Nakano, Gamper & Hou 2026**, *Methods Enzymol* 725:51, [doi](https://doi.org/10.1016/bs.mie.2025.10.007) — methods chapter summarising the above | same | same | 6 RTs for read-through, **each at its own published condition** | human | same |
+| **Pedor et al. 2026**, *RNA Biol* 23:1, [doi](https://doi.org/10.1080/15476286.2026.2720028) | **mismatch only** | fixed 42 °C / 16 h | MRT, MRT-CBD, uMRT, Induro | yeast | n = 6 technical |
+| **Werner et al. 2020**, *NAR* 48:3734, [doi](https://doi.org/10.1093/nar/gkaa113) | misincorporation, arrest, **nucleotide skipping** | — | 13 RTs | model RNAs | — |
+
+### Confirmed: the +/-1 window and three per-modification behaviours
+
+Nakano et al. state it with an exhaustive search:
+
+> "At each of these modifications, defined as position 0, we only found RT stops or RT
+> misincorporation from -1 to +1, despite an exhaustive search from positions -2 to +2, indicating
+> no RT jump-over."
+
+They also report that **acp3U20a and ms2i6A37/ms2t6A37 "responded primarily by RT stops... at the
++1 position after the site of the modification"**, while **I34 responded "exclusively by
+misincorporation without RT stop"**. All three match what change 4b derived independently from the
+four-RT data, and `_IMPLICATED_OFFSETS` encodes exactly that window. **Cite Nakano for the offset
+rule; do not present it as new.**
+
+Verified per channel on our 1,059 calls (offset = known modification position - observed signal
+position):
+
+| offset | deletion | mismatch | rt_stop |
+|---|---|---|---|
+| -3 | 0 | 0 | 2 |
+| -2 | 12 | 0 | 0 |
+| **-1** | 35 | 0 | **173** |
+| **0** | **192** | **341** | **266** |
+| +1 | 5 | 1 | 5 |
+| +2 | 4 | 0 | 0 |
+| +3 | 12 | 0 | 0 |
+
+- **Mismatch: zero calls outside +/-1.** Exact agreement.
+- **RT stop:** the 173-call pile at -1 *is* their "stop at the +1 position after the modification".
+  Six sites fall outside: four are single observations at 108-155x on TGIRT only (noise), one is
+  marginal (`Ser-TGA`:41), and one is real — see below.
+- **Deletion:** three sites appeared to violate the window. **All three resolve, and the earlier
+  claim in this document that deletion signal "smears 2-3 nt" was wrong.**
+
+### Retracted: deletions do not smear. It is homopolymer indel placement.
+
+| site | apparent offset | cause |
+|---|---|---|
+| `Pro-TGG`:36 | +2 to m1G38 | **m1G38 lies inside the same GGG run (36-38)** — a deletion within a homopolymer run has no unique alignment |
+| `Trp-CCA`:39 | -2 to ms2i6A37 | **ms2i6A37 lies inside the same AAAA run (36-39)** |
+| `Pro-TGG`:35 | +3 to m1G38 | linear 35 **is** the wobble base (Sprinzl 34): unannotated cmo5U34 |
+
+Once homopolymer ambiguity and that one missing annotation are accounted for, **Nakano's +/-1
+window holds in our data across all three channels.**
+
+⚠ **Actionable code change (not yet made):** for the deletion channel, the implicated base should
+be the whole homopolymer run containing the called position, not just *p* and *p-1*. A deletion
+inside a run is unplaceable by alignment, so identity lookup should accept any modification in the
+run. `_IMPLICATED_OFFSETS` cannot express this; it needs the reference sequence.
+
+### The one genuinely unexplained reproducible site
+
+`Pro-TGG`:34 — RT stop 58% median, **7 observations across Indura and TGIRT at 2,275x**, no
+MODOMICS modification within 3 nt. It sits in the anticodon loop of a tRNA whose map is borrowed
+from Pro-CGG and is already known to be missing cmo5U34. Most likely unannotated anticodon-loop
+chemistry; a *cmoB* knockout would settle it.
+
+### Threshold: ours is stricter than the published standard, and it costs sites
+
+Nakano et al. call a modification at **">10% of RT misincorporation or stop"**, with unmodified
+positions 70/74/75 as controls. Our defaults are mismatch 0.10 (matching), deletion 0.10, and
+**RT stop 0.20 — twice theirs**. Re-running the four-RT data at both:
+
+| rt_stop threshold | calls | unique sites | MODOMICS-explained | rt_stop-dominant (explained) | sites in >=2/3 reps |
+|---|---|---|---|---|---|
+| 0.20 (current) | 1,059 | 82 | 95.1% | 457 (96.1%) | 81.7% |
+| **0.10 (Nakano)** | **1,411** | **96** | **95.1%** | 830 (95.8%) | 81.8% |
+
+**+33% calls and +14 sites at identical precision** on both proxies. The 14 gained sites are
+exactly the classes we were under-detecting, all RT-stop-driven: **D16 in `Asn-GTT` (5 obs, 3
+enzymes) and `Val-GAC-2` (9 obs, 2 enzymes), m7G46 in `Thr-GGT` (4 obs, 2 enzymes), s2C33, and a
+Psi40** — dihydrouridine was our worst class (23/83) and Psi was 0/76. The other 9 gained sites are
+single observations and look like noise.
+
+⚠ **Decision required before changing it.** CHANNEL_FIX_SPEC says "do not lower thresholds to
+compensate", and that warning was about substituting stringency for a channel fix. This is a
+different case: aligning with a published standard, after the channel fix, with no measured
+precision loss. But `DEFAULT_CHANNEL_THRESHOLDS` derives from `DERIVATION_THRESHOLDS`, so changing
+it also invalidates `data/rt_channel_priors.csv`, which would need regenerating. **Not changed.**
+
+### What RT_comp still adds
+
+Stated conservatively, since three of the four papers post-date the experiment:
+
+1. **A factorial design.** No paper crosses enzyme with temperature: Nakano varies temperature for
+   Induro alone and compares Induro vs TGIRT at 42 °C only; the Hou chapter runs each of 6 RTs at
+   its own published condition, so enzyme and temperature are confounded there; Pedor fixes 42 °C.
+2. **Biological triplicates**, against n = 2 technical for the temperature series.
+3. **The deletion channel.** Absent from all three tRNA-seq papers (in Nakano the only "indel"
+   mentions are `--no-indels` in cutadapt adapter trimming). **But deletions as a signature are
+   established in the wider field** — Werner et al. list "nucleotide skipping" as one of three
+   readouts, and BID-seq deliberately converts Psi into deletions. The defensible claim is narrow:
+   *deletion as a major, enzyme- and temperature-dependent channel in tRNA-seq* (Maxima at 55 °C
+   carries ~51% of its signal weight there, and a misincorporation+stop framework misses it).
+4. **Bacterial tRNA** — the others are human, mouse and yeast.
+
+Their detection ceiling matches ours: they cannot detect Psi, and reach m7G only with a lowered
+4-12% cut-off (we found Psi 0/76, m7G 12/24). They note Marathon reaches both at 0.1-1%
+misincorporation, so that ceiling is enzyme-specific, not fundamental.
+
+### Precedent for the classifier prototype (§9)
+
+Nakano et al. **cite Werner et al.** (their ref 22) but build no model. Their approach to ambiguous
+sites is manual cross-reference of two RT datasets:
+
+> "having two datasets of tRNA modifications, each with a different RT in a different workflow,
+> would help resolve ambiguity, strengthen the prediction, and provide the basis for cross-reference
+> of each dataset."
+
+That is the same idea as the multi-condition fingerprint in §9, done by hand with two enzymes
+instead of learned over twelve conditions. Werner et al. is the direct precedent for the learned
+version. Both belong in the prototype's docstring.
+
+### Mechanism worth keeping
+
+> "the average misincorporation rate through all tRNA sequences remained constant at ~3%...
+> indicating that the increase in readthrough was driven by decreases of RT stops."
+
+Read-through gains come from losing RT stops while misincorporation holds constant. Channel
+partitioning is therefore a function of condition, not only of enzyme — which is why the priors are
+keyed on enzyme *and* temperature, and why they must never gate detection.
 
 ## CHANNEL_FIX_SPEC "Done when"
 

@@ -21,6 +21,14 @@ E. coli tRNA-Pro), acp3U for Ile2:47/48 and m7G for Ile2:46. It can only
 name classes it has seen: Ile2:34 (k2C, unseen) got m1G at p 0.31, so a
 low probability means "unknown", not a label.
 
+Prior art (see docs/CHANNEL_COMBINED_DESIGN.md §12): Werner et al. 2020
+(NAR 48:3734, doi:10.1093/nar/gkaa113) trained a random forest on RT
+signatures from 13 polymerases to discriminate methylated purines -- the
+direct precedent for the learned approach. Nakano et al. 2025 (Nat Commun
+16:1047) cite it but instead cross-reference two RT datasets by hand to
+"resolve ambiguity, strengthen the prediction". This script is that idea
+learned over 12 enzyme x temperature conditions rather than two.
+
 Open questions before this goes into the pipeline (see
 docs/CHANNEL_COMBINED_DESIGN.md, "Novel-site prediction"):
 - accuracy from a single enzyme/condition (normal runs) rather than the
