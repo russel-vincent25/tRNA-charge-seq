@@ -8,26 +8,39 @@ enzyme x temperature condition, the substitution spectrum, and the local
 sequence. Validation holds out whole isotypes so the model cannot memorise
 sites.
 
-Result on the 2024-06-19 four-RT run (4 RTs x 3 temperatures, E. coli),
-before the MODOMICS lookup fixes, 86 labelled sites / 5 classes:
+Result on the 2024-06-19 four-RT run (E. coli, 100 labelled sites, 5
+classes: D, m7G, ms2i6A, acp3U, m1G), held-out by isotype:
 
-    majority class                      0.38
-    reference base only                 0.69
-    RT fingerprint + sequence           0.84
-    + anticodon-relative position       0.88
+    majority-class baseline                     0.39
+    RT rates only, one condition (3 cols)       0.62
+    RT rates only, all 12 conditions (36)       0.75
+    RT rates + substitution spectrum            0.83
+    position only (rel_ac, rel_3p)              0.71
+    reference base only                         0.75
+    position + reference base                   0.87
+    sequence + position, NO rate features       0.88
+    everything                                  0.88
 
-It predicted m1G for Pro-GGG/TGG:38 (p 0.82-0.84; m1G37 is in every
-E. coli tRNA-Pro), acp3U for Ile2:47/48 and m7G for Ile2:46. It can only
-name classes it has seen: Ile2:34 (k2C, unseen) got m1G at p 0.31, so a
-low probability means "unknown", not a label.
+Two conclusions, and the second is why this is not in the pipeline.
 
-Prior art (see docs/CHANNEL_COMBINED_DESIGN.md §12): Werner et al. 2020
-(NAR 48:3734, doi:10.1093/nar/gkaa113) trained a random forest on RT
-signatures from 13 polymerases to discriminate methylated purines -- the
-direct precedent for the learned approach. Nakano et al. 2025 (Nat Commun
-16:1047) cite it but instead cross-reference two RT datasets by hand to
-"resolve ambiguity, strengthen the prediction". This script is that idea
-learned over 12 enzyme x temperature conditions rather than two.
+1. The RT signal does carry identity information -- 0.75 from 36 rate
+   numbers against a 0.39 baseline -- and the multi-condition fingerprint
+   is worth +0.13 over a single condition (0.75 vs 0.62). That is a
+   measured argument for running several RTs rather than one.
+
+2. For these five classes the signal is nonetheless redundant: sequence
+   and position alone reach 0.88, and adding every rate feature moves
+   nothing. These modifications sit at stereotyped positions (D in the
+   D-loop, m1G37, m7G46, acp3U47, ms2i6A37), so a model that knows where
+   it is can name them without looking at the RT data.
+
+That makes the predictor close to useless for its stated purpose. At a
+genuinely novel site -- no annotation -- the positional features would
+predict whatever modification usually sits there, which is circular, and
+the part that could generalise (the rates) is the weaker part. An earlier
+version of this docstring reported "0.84 from the RT fingerprint"; that
+figure mixed rate and sequence features and overstated the signal's
+contribution.
 
 Open questions before this goes into the pipeline (see
 docs/CHANNEL_COMBINED_DESIGN.md, "Novel-site prediction"):

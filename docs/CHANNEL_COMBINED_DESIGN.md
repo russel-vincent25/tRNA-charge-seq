@@ -332,47 +332,61 @@ misincorporating modifications, masked because they disrupt mapping. Unmasked po
 - The 898 still novel are dominated by A→G and A→T, the inosine/m1I and m1A signatures, in tRNAs
   that MODOMICS's 42 human sequences don't cover.
 
-## 9. Novel-site prediction (prototype, not in the pipeline)
+## 9. Novel-site prediction (prototype, stays out of the pipeline)
 
-`docs/prototypes/novel_site_classifier.py` trains a random forest on the exact-MODOMICS-labelled
-sites and predicts labels for novel sites. Features are the site's RT fingerprint (median rate per
-channel per enzyme × temperature), substitution spectrum and local sequence. Validation holds out
-whole isotypes. Four-RT run, 88 labelled sites, 5 classes (D, ms2i6A, m7G, acp3U, m1G):
+`docs/prototypes/novel_site_classifier.py` trains a random forest on exact-MODOMICS-labelled sites
+and predicts labels for novel ones. Features: median rate per channel per enzyme x temperature,
+substitution spectrum, local sequence, and position relative to the anticodon and 3' end.
+Validation holds out whole isotypes. Four-RT run, 100 labelled sites, five classes (D, m7G,
+ms2i6A, acp3U, m1G):
 
-| features | held-out accuracy |
-|---|---|
-| majority class | 0.38 |
-| reference base only | 0.73 |
-| RT fingerprint + sequence | 0.84 |
-| + anticodon-relative position | 0.88 |
+| feature set | n | held-out accuracy |
+|---|---|---|
+| majority-class baseline | 0 | 0.39 |
+| **RT rates only, one condition** | 3 | **0.62** |
+| **RT rates only, all 12 conditions** | 36 | **0.75** |
+| RT rates + substitution spectrum | 40 | 0.83 |
+| position only (`rel_ac`, `rel_3p`) | 2 | 0.71 |
+| reference base only | 4 | 0.75 |
+| position + reference base | 6 | 0.87 |
+| **sequence + position, no rate features** | 20 | **0.88** |
+| everything | 56 | 0.88 |
 
-Before the lookup fixes, it predicted m1G for `Pro-GGG`/`Pro-TGG`:38 (p 0.82–0.84). That is now
-confirmed by MODOMICS. It also predicted acp3U for `Ile2`:47/48 and m7G for `Ile2`:46. It cannot
-name unseen classes: `Ile2`:34 is k2C and got m1G at p 0.31. **Low probability must read as
-"unknown".**
+⚠ **Correction.** This section previously reported "0.84 from the RT fingerprint + sequence" against
+"0.73 reference base only", and read that gap as the signal's contribution. It was not: that
+comparison mixed rate features with sequence-context features. The decomposition above separates
+them.
 
-Why it stays a prototype:
+**The multi-condition question is answered, and RT_comp answered it.** On signal alone, 12
+conditions give 0.75 against 0.62 for a single condition — **the fingerprint is worth +0.13**, which
+is a measured argument for running several RTs rather than one. No new experiment was needed.
 
-1. **The fingerprint uses 12 RT × temperature conditions.** A normal run uses one enzyme;
-   single-condition accuracy is unmeasured.
-2. **Labels are only as good as MODOMICS.** There is no ground truth for the sites that matter (the
-   unlabelled ones) and no true negatives.
-3. **Small and narrow:** 88 sites, five classes, one organism.
+**But for these five classes the signal is redundant.** Sequence and position alone reach 0.88, and
+adding every rate feature moves nothing. All five sit at stereotyped positions (D in the D-loop,
+m1G37, m7G46, acp3U47, ms2i6A37), so a model that knows where it is can name them without looking
+at the RT data at all. This also explains the earlier anecdote that the model "recovered m1G at
+`Pro-GGG`:38 without being told": position 38 of a tRNA-Pro is where m1G sits — it inferred from
+position, not from the deletion pattern.
 
-What would answer these:
+**Why it stays out.** The accuracy is positional, not signal-based, and positional prediction is
+circular at exactly the sites the tool exists for: a novel site has no annotation, so predicting
+"whatever usually sits here" adds nothing MODOMICS does not already say. Making it useful needs
+ground truth that separates signal from position — modification-enzyme knockouts, where a site's
+chemistry is known independently of its coordinates. The design sketched below stands, but it is a
+new experiment, not an analysis of existing data.
 
-- **RT_comp (existing data) is enough to measure point 1.** Retrain on each enzyme × temperature
-  subset alone and compare with the 12-condition model. No new experiment is needed.
-- **A dedicated experiment would answer points 2 and 3.** The design would be E. coli wild type
-  versus Keio single-gene knockouts of tRNA modification enzymes:
-  - ΔtrmB (m7G46), ΔtapT (acp3U47), ΔmiaA/ΔmiaB (i6A/ms2i6A37)
-  - ΔdusA/B/C (D), ΔtruA (Ψ38–40), ΔtrmA (m5U54)
-  - an unmodified in-vitro-transcribed tRNA pool as the per-channel null
+### A dedicated experiment would answer the rest
 
-  Run them on two RTs with complementary channels (e.g. TGIRT and Maxima at 55 °C) in triplicate.
-  Loss of signal in a knockout gives per-site ground truth and true negatives. The IVT pool also
-  calibrates the background model directly. Essential enzymes (trmD for m1G37, tilS for k2C34)
-  would need depletion strains.
+E. coli wild type versus Keio single-gene knockouts of modification enzymes:
+
+- ΔtrmB (m7G46), ΔtapT (acp3U47), ΔmiaA/ΔmiaB (i6A/ms2i6A37)
+- ΔdusA/B/C (D), ΔtruA (Ψ38–40), ΔtrmA (m5U54)
+- an unmodified in-vitro-transcribed tRNA pool as the per-channel null
+
+Two RTs with complementary channels (e.g. TGIRT and Maxima at 55 °C), triplicate. Loss of signal in
+a knockout gives per-site ground truth and true negatives, and the IVT pool calibrates the
+background model directly. Essential enzymes (trmD for m1G37, tilS for k2C34) need depletion
+strains. **RV plans to run the Keio collection as a later check.**
 
 ## 10. Change 5: per-channel aggregates, grouped by site
 
