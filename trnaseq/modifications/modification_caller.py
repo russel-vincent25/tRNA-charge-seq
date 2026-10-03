@@ -76,6 +76,45 @@ _MAPPING_SUPPORT = {
 # Profile names that MODOMICS spells differently
 _MOD_ALIASES = {'Ψ': 'Psi'}
 
+
+def _homopolymer_run(reference_seq: str, position: int) -> List[int]:
+    """1-based positions of the run of identical bases containing *position*.
+
+    A deletion inside a homopolymer run has no unique alignment -- the gap can
+    be placed at any base of the run -- so every base of the run is equally
+    consistent with the observed signal. Returns ``[position]`` when the base
+    is not part of a run, and when the sequence is unavailable.
+    """
+    if not reference_seq or not (1 <= position <= len(reference_seq)):
+        return [position]
+    base = reference_seq[position - 1].upper()
+    start = end = position
+    while start > 1 and reference_seq[start - 2].upper() == base:
+        start -= 1
+    while end < len(reference_seq) and reference_seq[end].upper() == base:
+        end += 1
+    return list(range(start, end + 1))
+
+
+def _implicated_positions(
+    channel: str,
+    position: int,
+    reference_seq: Optional[str] = None,
+) -> List[int]:
+    """Bases whose modification could produce this signal, most likely first.
+
+    The offsets in :data:`_IMPLICATED_OFFSETS` come first. For the deletion
+    channel the rest of the homopolymer run is then added, nearest first,
+    because a gap inside a run is unplaceable by alignment.
+    """
+    out = [position + off for off in _IMPLICATED_OFFSETS[channel]]
+    if channel == 'deletion':
+        for q in sorted(_homopolymer_run(reference_seq, position),
+                        key=lambda q: (abs(q - position), q)):
+            if q not in out:
+                out.append(q)
+    return out
+
 # A fired channel whose prior weight is below this is 'unexpected' for the enzyme
 UNEXPECTED_CHANNEL_WEIGHT = 0.10
 
@@ -949,7 +988,9 @@ class ModificationCaller:
         Identity is then assigned to the base the signal implicates
         (``modified_position``): substitutions sit on the modified base,
         deletions on it or just 3' of it, and RT stops one base 3' of it
-        (see :data:`_IMPLICATED_OFFSETS`). In order:
+        (see :data:`_IMPLICATED_OFFSETS`). A deletion inside a homopolymer run
+        implicates the whole run, since alignment cannot place the gap within
+        it; those sites are marked ``position_ambiguous``. In order:
 
         1. ``known_modomics`` -- *known_mods_df* (MODOMICS, mapped to linear
            positions by sequence alignment) has a modification at an
@@ -1028,12 +1069,17 @@ class ModificationCaller:
             names = [p.name for p, _ in ranked]
 
             # MODOMICS modifications at the implicated bases, most likely first
-            hits = []
+            hits, seen = [], set()
             for c in order:
-                for off in _IMPLICATED_OFFSETS[c]:
-                    if position + off in pos_to_mod and position + off not in [h[0] for h in hits]:
-                        hits.append((position + off, pos_to_mod[position + off]))
+                for q in _implicated_positions(c, position, reference_seq):
+                    if q in pos_to_mod and q not in seen:
+                        seen.add(q)
+                        hits.append((q, pos_to_mod[q]))
             modomics_hit = hits[0] if hits else None
+            # A deletion inside a homopolymer run cannot be placed exactly
+            run_ambiguous = bool(
+                gated['deletion']
+                and len(_homopolymer_run(reference_seq, position)) > 1)
 
             fraction = 0.0
             if modomics_hit is not None:
@@ -1061,6 +1107,7 @@ class ModificationCaller:
                 'candidates': ';'.join(names),
                 'n_candidates': len(names),
                 'identity_support': support,
+                'position_ambiguous': run_ambiguous,
                 'pattern_fraction': fraction,
                 'in_typical_position': modomics_hit is not None,
                 'mismatch_rate': rec['rate_mismatch'],

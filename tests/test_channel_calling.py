@@ -15,7 +15,10 @@ from trnaseq.modifications.modification_caller import (
     CHANNELS,
     ChannelBackground,
     ModificationCaller,
+    _IMPLICATED_OFFSETS,
     _bh_qvalues,
+    _homopolymer_run,
+    _implicated_positions,
     estimate_channel_backgrounds,
 )
 from trnaseq.modifications.rt_signatures import RTSignatureAnalyzer
@@ -277,3 +280,59 @@ def test_analyzer_mismatch_rate_excludes_deletions():
                          'U': [0, 0], 'N': [0, 0], '-': [300, 300]})
     mm = analyzer.calculate_mismatch_rates(pscm, 'GG')
     assert mm['mismatch_rate'].tolist() == pytest.approx([0.0, 0.05])
+
+
+class TestHomopolymerDeletions:
+    """A deletion inside a run of identical bases has no unique alignment, so
+    every base of the run is equally consistent with the signal."""
+
+    SEQ = 'ACGGGTAAAAC'   # GGG at 3-5, AAAA at 7-10
+
+    @pytest.mark.parametrize('position,expected', [
+        (4, [3, 4, 5]),      # middle of GGG
+        (7, [7, 8, 9, 10]),  # start of AAAA
+        (1, [1]),            # not in a run
+        (11, [11]),          # last base, not in a run
+    ])
+    def test_homopolymer_run(self, position, expected):
+        assert _homopolymer_run(self.SEQ, position) == expected
+
+    def test_deletion_implicates_the_run_nearest_first(self):
+        assert _implicated_positions('deletion', 3, self.SEQ) == [3, 2, 4, 5]
+        assert _implicated_positions('deletion', 10, self.SEQ) == [10, 9, 8, 7]
+
+    @pytest.mark.parametrize('channel', ['mismatch', 'rt_stop'])
+    def test_other_channels_are_unaffected(self, channel):
+        assert (_implicated_positions(channel, 4, self.SEQ)
+                == [4 + o for o in _IMPLICATED_OFFSETS[channel]])
+
+    def test_no_sequence_falls_back_to_offsets(self):
+        assert _implicated_positions('deletion', 5, None) == [5, 4]
+
+    def test_modification_elsewhere_in_the_run_labels_the_site(self):
+        # Deletion called at 7; the modification sits at 10, same AAAA run
+        sig = _signatures({7: {'gap_rate': 0.3}})
+        known = pd.DataFrame([{'linear_position': 10,
+                               'modification_short_name': 'ms2i6A'}])
+        row = _caller().call_all('t', sig, reference_seq=self.SEQ,
+                                 known_mods_df=known).iloc[0]
+        assert row['modification'] == 'ms2i6A'
+        assert row['modified_position'] == 10
+        assert row['position_ambiguous']
+
+    def test_mismatch_does_not_borrow_across_the_run(self):
+        # Same geometry, but a substitution is placed exactly
+        sig = _signatures({7: {'mismatch_rate': 0.3}})
+        known = pd.DataFrame([{'linear_position': 10,
+                               'modification_short_name': 'ms2i6A'}])
+        row = _caller().call_all('t', sig, reference_seq=self.SEQ,
+                                 known_mods_df=known).iloc[0]
+        assert row['source'] == 'novel_candidate'
+        assert not row['position_ambiguous']
+
+    def test_flag_is_off_outside_runs_and_detection_is_unchanged(self):
+        sig = _signatures({1: {'gap_rate': 0.3}, 7: {'gap_rate': 0.3}})
+        calls = _caller().call_all('t', sig, reference_seq=self.SEQ)
+        assert set(calls['position']) == {1, 7}          # both detected
+        amb = calls.set_index('position')['position_ambiguous']
+        assert not amb.loc[1] and amb.loc[7]

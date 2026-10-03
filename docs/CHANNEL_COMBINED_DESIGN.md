@@ -481,10 +481,25 @@ position):
 Once homopolymer ambiguity and that one missing annotation are accounted for, **Nakano's +/-1
 window holds in our data across all three channels.**
 
-⚠ **Actionable code change (not yet made):** for the deletion channel, the implicated base should
-be the whole homopolymer run containing the called position, not just *p* and *p-1*. A deletion
-inside a run is unplaceable by alignment, so identity lookup should accept any modification in the
-run. `_IMPLICATED_OFFSETS` cannot express this; it needs the reference sequence.
+✅ **Implemented 2026-10-03.** `_homopolymer_run()` and `_implicated_positions()` replace the bare
+offset table for the deletion channel: a deletion at *p* implicates *p*, *p-1*, and then every base
+of the homopolymer run containing *p*, nearest first. Sites where the run is longer than one base
+carry **`position_ambiguous=True`**, so an ambiguous placement is visible rather than silent. The
+substitution and RT-stop channels are untouched, and with no reference sequence the behaviour falls
+back to the offsets.
+
+On the four-RT data, **detection is identical (1,417 call-observations either way)** and 19 calls
+across exactly the three predicted sites are relabelled:
+
+| site | was | now | modified_position |
+|---|---|---|---|
+| `Trp-CCA`:39 (12 obs) | novel_candidate | **ms2i6A** | 37 |
+| `Pro-TGG`:36 (4 obs) | novel_candidate | **m1G** | 38 |
+| `Arg-ACG`:46 (3 obs) | novel_candidate | **m7G** | 47 |
+
+Unique sites 96 -> 95 (two merge onto one modified base), MODOMICS-explained 95.1% -> 96.5%, and
+novel_candidate 4.9% -> 3.5%. 227 of 1,417 calls are flagged `position_ambiguous`, 159 of them
+deletion-dominant.
 
 ### The one genuinely unexplained reproducible site
 
@@ -502,7 +517,12 @@ positions 70/74/75 as controls. Our defaults are mismatch 0.10 (matching), delet
 | rt_stop threshold | calls | unique sites | MODOMICS-explained | rt_stop-dominant (explained) | sites in >=2/3 reps |
 |---|---|---|---|---|---|
 | 0.20 (old) | 1,059 | 82 | 95.1% | 457 (96.1%) | 81.7% |
-| **0.10 (adopted)** | **1,411** | **96** | **95.1%** | 830 (95.8%) | 81.8% |
+| **0.10 (adopted)** | **1,417** | **96** | **95.1%** | 836 (95.8%) | 81.8% |
+
+⚠ **Correction.** This row first read 1,411 calls / 830 stop-dominant. The sensitivity script
+overrode the *calling* threshold but left `estimate_channel_backgrounds` fitting its null bulk at
+`rate < 0.5 x` the **old** threshold, so the background and the gate disagreed. With both
+consistent at 0.10 the figure is 1,417. The direction and size of the effect are unchanged.
 
 **+33% calls and +14 sites at identical precision** on both proxies. The 14 gained sites are
 exactly the classes we were under-detecting, all RT-stop-driven: **D16 in `Asn-GTT` (5 obs, 3
