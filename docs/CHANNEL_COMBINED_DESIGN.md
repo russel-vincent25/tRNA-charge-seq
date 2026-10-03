@@ -1,7 +1,8 @@
 # Design: channel-aware calling and site identity (CHANNEL_FIX_SPEC change 4)
 
-**Status (2026-10-03):** detection (change 4, §1–§5) and site identity (change 4b, §6–§7) are
-decided and implemented. Changes 5–6 are not started.
+**Status (2026-10-03):** detection (change 4, §1–§5), site identity (change 4b, §6–§7) and the
+novel-site lookup fixes and table (§8) are implemented. The novel-site predictor (§9) is a
+prototype. The N-masked-reference bug (§8) is open. Changes 5–6 are not started.
 
 Evidence comes from the 2024-06-19 four-RT run (4 enzymes × 3 temperatures × 3 replicates,
 `ecoli.fa`, 49 references). Only `mismatch_profile.parquet` and `rt_profile.parquet` were used:
@@ -268,6 +269,91 @@ On the human example project, 48% of sites are MODOMICS-labelled.
   MODOMICS until `organism: human` was set.
 - **Profile catalogue gaps** (acp3U, D, m5U, m2A, k2C) matter only for references with no MODOMICS
   map.
+
+## 8. Novel sites after the MODOMICS lookup fixes
+
+**Lookup fixes (`6a07e75`).** On the four-RT run, 129 of the 154 novel observations left after 4b
+were known modifications the lookup had missed:
+
+- **Isotype names.** `Ile2` and `fMet`/`iMet` didn't match MODOMICS keys. They now map to `ile`
+  and `ini`.
+- **Borrowed maps dropped the anticodon loop**, losing m1G37 in every E. coli tRNA-Pro. Stage 6
+  now keeps these modifications, tagged `modomics_isotype`.
+- **Wrong entries in the symbol table.** `?` is m5C (on C), not a modified G; `}` is k2C (on C), not
+  a modified U. The table is now filled from MODOMICS's own symbol list (shipped as
+  `data/modomics_symbols.json`).
+- **Mitochondrial references** no longer borrow cytosolic maps.
+
+Result: novel observations 13–17% → 3–7% by enzyme; calls unchanged.
+
+**Novel-site table (`8e405c7`).** Stage 6 writes `results/modifications/novel_sites.{parquet,csv}`,
+one row per unexplained site across samples. It records:
+
+- channels fired and substitution spectrum
+- median and maximum rate per channel
+- the samples, conditions and enzymes showing the site
+- labels the same site got in other samples
+- the nearest MODOMICS modification and its offset
+
+The modification report has a matching **Novel Sites** panel. On the four-RT run, 13 sites remain:
+
+- **Within 3 nt of a known modification:** deletions 2–3 nt from ms2i6A37 / m1G38 on Maxima and
+  SSIV, i.e. the signal smears beyond the offsets used for identity.
+- **Real MODOMICS gaps:** e.g. `Pro-TGG`:34, probably cmo5U34, absent from the borrowed Pro-CGG
+  map.
+- **Single TGIRT RT stops** at about 120× coverage, probably noise.
+
+**Pre-existing bug found, not fixed: N-masked references.** `RTSignatureAnalyzer` computes the
+substitution rate against an `N` reference base, so every read counts as a mismatch. On the human
+example (`tRNA_database_masked`, 533 masked bases), **1,754 of 3,115 calls (56%) sit on masked
+bases at mismatch ≈ 1.0**. HEAD does the same. The four-RT run (`ecoli.fa`, unmasked) is not
+affected. The substitution channel is undefined at a masked base. Options:
+
+- **(a) Exclude it.** Deletion and RT stop still apply. This matches `compute_mismatch_profile`,
+  which already reports 0 at N.
+- **(b) Use the unmasked reference.** Recover the base from it so the rate can be measured.
+
+## 9. Novel-site prediction (prototype, not in the pipeline)
+
+`docs/prototypes/novel_site_classifier.py` trains a random forest on the exact-MODOMICS-labelled
+sites and predicts labels for novel sites. Features are the site's RT fingerprint (median rate per
+channel per enzyme × temperature), substitution spectrum and local sequence. Validation holds out
+whole isotypes. Four-RT run, 88 labelled sites, 5 classes (D, ms2i6A, m7G, acp3U, m1G):
+
+| features | held-out accuracy |
+|---|---|
+| majority class | 0.38 |
+| reference base only | 0.73 |
+| RT fingerprint + sequence | 0.84 |
+| + anticodon-relative position | 0.88 |
+
+Before the lookup fixes, it predicted m1G for `Pro-GGG`/`Pro-TGG`:38 (p 0.82–0.84). That is now
+confirmed by MODOMICS. It also predicted acp3U for `Ile2`:47/48 and m7G for `Ile2`:46. It cannot
+name unseen classes: `Ile2`:34 is k2C and got m1G at p 0.31. **Low probability must read as
+"unknown".**
+
+Why it stays a prototype:
+
+1. **The fingerprint uses 12 RT × temperature conditions.** A normal run uses one enzyme;
+   single-condition accuracy is unmeasured.
+2. **Labels are only as good as MODOMICS.** There is no ground truth for the sites that matter (the
+   unlabelled ones) and no true negatives.
+3. **Small and narrow:** 88 sites, five classes, one organism.
+
+What would answer these:
+
+- **RT_comp (existing data) is enough to measure point 1.** Retrain on each enzyme × temperature
+  subset alone and compare with the 12-condition model. No new experiment is needed.
+- **A dedicated experiment would answer points 2 and 3.** The design would be E. coli wild type
+  versus Keio single-gene knockouts of tRNA modification enzymes:
+  - ΔtrmB (m7G46), ΔtapT (acp3U47), ΔmiaA/ΔmiaB (i6A/ms2i6A37)
+  - ΔdusA/B/C (D), ΔtruA (Ψ38–40), ΔtrmA (m5U54)
+  - an unmodified in-vitro-transcribed tRNA pool as the per-channel null
+
+  Run them on two RTs with complementary channels (e.g. TGIRT and Maxima at 55 °C) in triplicate.
+  Loss of signal in a knockout gives per-site ground truth and true negatives. The IVT pool also
+  calibrates the background model directly. Essential enzymes (trmD for m1G37, tilS for k2C34)
+  would need depletion strains.
 
 Not yet done: change 5 (per-channel rates and `dominant_pattern` in the aggregates; also make
 `ReplicateAggregator` group by site rather than by label, since 5 of 447 site×condition groups split
