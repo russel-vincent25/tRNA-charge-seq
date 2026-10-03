@@ -192,7 +192,8 @@ def run_modifications(args):
                 ref_seq=ref_seq, anticodon_linear_start=ac_start,
             )
             known_mods = (annotator.get_known_mods_linear(
-                trna_name, ref_seq, anticodon_linear_start=ac_start)
+                trna_name, ref_seq, anticodon_linear_start=ac_start,
+                include_donor_anticodon_loop=True)
                 if ref_seq else None)
 
             mod_calls = caller.call_all(

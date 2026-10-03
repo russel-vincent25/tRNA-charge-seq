@@ -1724,6 +1724,7 @@ class PreprocessingPipeline:
                         known_mods_for_trna = annotator.get_known_mods_linear(
                             trna_name, ref_seq,
                             anticodon_linear_start=ac_start,
+                            include_donor_anticodon_loop=True,
                         )
 
                     calls_df = caller.call_all(

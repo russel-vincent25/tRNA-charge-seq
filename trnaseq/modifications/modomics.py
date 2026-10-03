@@ -58,7 +58,6 @@ MODOMICS_TO_BASE: Dict[str, str] = {
     'Q': 'G',       # queuosine -> G
     # --- symbols from E. coli MODOMICS sequences (verified via nomenclature) ---
     'V': 'U',       # cmo5U (uridine 5-oxyacetic acid) -> U
-    '?': 'G',       # xG (unknown modified guanosine) -> G
     '#': 'G',       # Gm (2'-O-methylguanosine) -> G
     'J': 'U',       # Um (2'-O-methyluridine) -> U
     '$': 'U',       # cmnm5s2U -> U
@@ -71,16 +70,10 @@ MODOMICS_TO_BASE: Dict[str, str] = {
     '6': 'A',       # t6A (N6-threonylcarbamoyladenosine) -> A
     'X': 'U',       # acp3U (3-(3-amino-3-carboxypropyl)uridine) -> U
     '{': 'U',       # mnm5U (5-methylaminomethyluridine) -> U
-    'Y': 'U',       # modified U
-    'Z': 'A',       # modified A
-    '}': 'U',       # modified U
     '\u027F': 'A',  # ɿ  m2A (2-methyladenosine) -> A
     '\u02A4': 'C',  # ʤ  s2C (2-thiocytidine) -> C
     '\u0416': 'A',  # Ж  m6A (N6-methyladenosine) -> A
-    '\u0427': 'A',  # Ч  modified A
-    '\u046E': 'G',  # Ѯ  modified G
     '\u2284': 'G',  # ⊄  gluQ (glutamyl-queuosine) -> G
-    '\u3446': 'U',  # 㑆  modified U
 }
 
 # Map modification symbols to their short names.
@@ -98,7 +91,6 @@ MODOMICS_SYMBOL_NAMES: Dict[str, str] = {
     'I': 'I',        # inosine
     'Q': 'Q',        # queuosine
     'V': 'cmo5U',    # uridine 5-oxyacetic acid
-    '?': 'xG',       # unknown modified guanosine
     '#': 'Gm',       # 2'-O-methylguanosine
     'J': 'Um',       # 2'-O-methyluridine
     '$': 'cmnm5s2U', # 5-carboxymethylaminomethyl-2-thiouridine
@@ -116,6 +108,26 @@ MODOMICS_SYMBOL_NAMES: Dict[str, str] = {
     '\u0416': 'm6A', # N6-methyladenosine
     '\u2284': 'gluQ', # glutamyl-queuosine
 }
+
+# Fill both tables from MODOMICS's own symbol table (shipped as
+# data/modomics_symbols.json) for every symbol not curated above. Hand entries
+# that contradicted it were removed: '?' is m5C on C (not a modified G), '}' is
+# k2C (lysidine) on C, 'Y' is wybutosine on G, 'Z' is Ym on U, 'Ч' is i6A.
+# Curated spellings ('Psi', 'm22G') are kept where both exist.
+def _load_modomics_symbols() -> Dict[str, Dict[str, str]]:
+    path = Path(__file__).parent / 'data' / 'modomics_symbols.json'
+    try:
+        with open(path, encoding='utf-8') as fh:
+            return json.load(fh)['symbols']
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+for _symbol, _entry in _load_modomics_symbols().items():
+    if _entry.get('parent') in ('A', 'C', 'G', 'U'):
+        MODOMICS_TO_BASE.setdefault(_symbol, _entry['parent'])
+    if _entry.get('short_name'):
+        MODOMICS_SYMBOL_NAMES.setdefault(_symbol, _entry['short_name'])
 
 # Map modification short names to their expected RT signature type.
 # This allows prediction of what kind of RT perturbation a known modification
@@ -203,6 +215,28 @@ def _strip_anticodon(anticodon_raw: str) -> str:
     return ''.join(result)
 
 
+# Reference isotype labels that MODOMICS files under another name
+_ISOTYPE_ALIASES = {'fmet': 'ini', 'imet': 'ini'}
+
+
+def _lookup_key(trna_name: str) -> Optional[Tuple[str, str]]:
+    """(isotype, anticodon) MODOMICS key for a reference name, or None.
+
+    Isodecoder-group digits are dropped ('Ile2' -> 'ile'), initiators map to
+    MODOMICS 'ini', and mitochondrial references return None: MODOMICS
+    holds no mitochondrial tRNAs for the supported organisms, so a match
+    would borrow an unrelated cytosolic modification map.
+    """
+    if 'mito' in trna_name.lower():
+        return None
+    parts = trna_name.split('-')
+    if len(parts) < 3:
+        return None
+    isotype = parts[1].lower()
+    isotype = _ISOTYPE_ALIASES.get(isotype, isotype.rstrip('0123456789'))
+    return isotype, parts[2].upper()
+
+
 def _strip_modomics_sequence(modomics_seq: str) -> Tuple[str, List[Tuple[int, str, str]]]:
     """Strip modification symbols from a MODOMICS sequence string.
 
@@ -233,9 +267,13 @@ def _strip_modomics_sequence(modomics_seq: str) -> Tuple[str, List[Tuple[int, st
             mods.append((pos, char, mod_name))
             pos += 1
         elif not char.isspace():
-            # Unknown modification symbol — use 'N' to preserve alignment.
+            # Unknown parent base — use 'N' to preserve alignment. MODOMICS
+            # writes an unidentified unmodified nucleotide as 'N' too.
             base_chars.append('N')
-            mods.append((pos, char, f'unknown({char})'))
+            if MODOMICS_SYMBOL_NAMES.get(char) == 'N':
+                pos += 1
+                continue
+            mods.append((pos, char, MODOMICS_SYMBOL_NAMES.get(char, f'unknown({char})')))
             pos += 1
         # Skip only whitespace / annotation characters.
 
@@ -747,6 +785,7 @@ class MODOMICSAnnotator:
         trna_name: str,
         ref_seq: str,
         anticodon_linear_start: Optional[int] = None,
+        include_donor_anticodon_loop: bool = False,
     ) -> pd.DataFrame:
         """Get known modifications for a tRNA with positions mapped to linear coordinates.
 
@@ -761,18 +800,22 @@ class MODOMICSAnnotator:
                 alignment-based mapping via :meth:`map_to_reference`.
             anticodon_linear_start: Optional 1-based linear position of the
                 anticodon. Used as fallback when alignment is not possible.
+            include_donor_anticodon_loop: Keep anticodon-loop modifications
+                transferred from a same-isotype donor. They are dropped by
+                default because wobble/37 chemistry can be anticodon-specific,
+                but some (e.g. m1G37 in every E. coli tRNA-Pro) are
+                isotype-wide; the ``mapping`` column marks them as weaker.
 
         Returns:
-            DataFrame with ``linear_position`` column added, rows with
-            unmappable or out-of-range positions removed.
+            DataFrame with ``linear_position`` and ``mapping`` columns
+            (``'exact'`` isodecoder, ``'isotype'`` donor, or
+            ``'sprinzl_heuristic'``), rows with unmappable or out-of-range
+            positions removed. Empty for mitochondrial references.
         """
-        # Parse tRNA name for isotype/anticodon lookup
-        parts = trna_name.split('-')
-        if len(parts) < 3:
+        key = _lookup_key(trna_name)
+        if key is None:
             return pd.DataFrame()
-
-        isotype = parts[1].lower()
-        anticodon = parts[2].upper()
+        isotype, anticodon = key
         ref_len = len(ref_seq) if ref_seq else 0
 
         # Try alignment-based mapping: exact (isotype, anticodon) first
@@ -780,7 +823,7 @@ class MODOMICSAnnotator:
         if modomics_seq and ref_seq:
             result = self._align_and_map(modomics_seq, ref_seq)
             if result is not None:
-                return result
+                return result.assign(mapping='exact')
 
         # Isotype-level fallback: use a same-isotype sequence if available.
         # Anticodon-loop positions (Sprinzl 32-38) are excluded because
@@ -801,10 +844,10 @@ class MODOMICSAnnotator:
                 donor_seq = candidates[donor_key]
                 result = self._align_and_map(
                     donor_seq, ref_seq,
-                    exclude_anticodon_loop=True,
+                    exclude_anticodon_loop=not include_donor_anticodon_loop,
                 )
                 if result is not None:
-                    return result
+                    return result.assign(mapping='isotype')
 
         # Last resort: use CSV/API data with heuristic Sprinzl→linear mapping
         known = self.get_known_modifications(trna_name)
@@ -822,7 +865,7 @@ class MODOMICSAnnotator:
         known = known.dropna(subset=['linear_position'])
         known['linear_position'] = known['linear_position'].astype(int)
         known = known[(known['linear_position'] >= 1) & (known['linear_position'] <= ref_len)]
-        return known.reset_index(drop=True)
+        return known.reset_index(drop=True).assign(mapping='sprinzl_heuristic')
 
     def _align_and_map(
         self,
@@ -1010,8 +1053,10 @@ class MODOMICSAnnotator:
             )
             return pd.DataFrame()
 
-        isotype = parts[1]     # e.g. 'Ala'
-        anticodon = parts[2]   # e.g. 'GGC'
+        key = _lookup_key(trna_name)
+        if key is None:
+            return pd.DataFrame()
+        isotype, anticodon = key   # e.g. ('ala', 'GGC')
 
         # Ensure modifications are loaded
         mods_df = self.get_modifications()

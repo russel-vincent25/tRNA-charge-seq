@@ -66,6 +66,13 @@ _IMPLICATED_OFFSETS = {
     'rt_stop': (-1, 0),
 }
 
+# identity_support for each MODOMICS mapping route (modomics.get_known_mods_linear)
+_MAPPING_SUPPORT = {
+    'exact': 'modomics',               # this isodecoder's own MODOMICS sequence
+    'isotype': 'modomics_isotype',     # borrowed from a same-isotype sequence
+    'sprinzl_heuristic': 'modomics_heuristic',  # anticodon-offset fallback
+}
+
 # Profile names that MODOMICS spells differently
 _MOD_ALIASES = {'Ψ': 'Psi'}
 
@@ -891,9 +898,9 @@ class ModificationCaller:
         return ranked
 
     @staticmethod
-    def _known_mods_by_position(known_mods_df: Optional[pd.DataFrame]) -> Dict[int, Tuple[str, str]]:
-        """{linear_position: (short_name, full_name)}; co-located mods joined by '; '."""
-        pos_to_mod: Dict[int, Tuple[str, str]] = {}
+    def _known_mods_by_position(known_mods_df: Optional[pd.DataFrame]) -> Dict[int, Tuple[str, str, str]]:
+        """{linear_position: (short_name, full_name, mapping)}; co-located mods joined by '; '."""
+        pos_to_mod: Dict[int, Tuple[str, str, str]] = {}
         if (known_mods_df is None or known_mods_df.empty
                 or 'linear_position' not in known_mods_df.columns):
             return pos_to_mod
@@ -902,12 +909,13 @@ class ModificationCaller:
             short = row.get('modification_short_name', 'known')
             full = row.get('modification_full_name', short)
             full = short if pd.isna(full) else full
+            mapping = row.get('mapping', 'exact')
             if lp in pos_to_mod:
-                prev_short, prev_full = pos_to_mod[lp]
+                prev_short, prev_full, _ = pos_to_mod[lp]
                 if short not in prev_short:
-                    pos_to_mod[lp] = (f"{prev_short}; {short}", f"{prev_full}; {full}")
+                    pos_to_mod[lp] = (f"{prev_short}; {short}", f"{prev_full}; {full}", mapping)
             else:
-                pos_to_mod[lp] = (short, full)
+                pos_to_mod[lp] = (short, full, mapping)
         return pos_to_mod
 
     @staticmethod
@@ -946,6 +954,8 @@ class ModificationCaller:
         1. ``known_modomics`` -- *known_mods_df* (MODOMICS, mapped to linear
            positions by sequence alignment) has a modification at an
            implicated base. Requires ``use_position_priors``.
+           ``identity_support`` is 'modomics' for the isodecoder's own
+           sequence, 'modomics_isotype' for one borrowed from its isotype.
         2. ``known`` -- a profile whose specific substitution pattern
            matches (``identity_support='pattern'``).
         3. ``novel_candidate`` -- detected, identity unresolved.
@@ -1027,9 +1037,9 @@ class ModificationCaller:
 
             fraction = 0.0
             if modomics_hit is not None:
-                base, (modification, full_name) = modomics_hit
-                source, support = 'known_modomics', 'modomics'
-                hit_names = [name for _, (name, _) in hits]
+                base, (modification, full_name, mapping) = modomics_hit
+                source, support = 'known_modomics', _MAPPING_SUPPORT.get(mapping, 'modomics')
+                hit_names = [name for _, (name, _, _) in hits]
                 names = hit_names + [n for n in names if not any(
                     _MOD_ALIASES.get(n, n) in h for h in hit_names)]
             elif ranked and ranked[0][1] > 0 and ranked[0][0].mismatch_pattern \
@@ -1133,7 +1143,9 @@ class ModificationCaller:
         effect = np.where(fired, np.clip((rates - thresholds) / (0.5 - thresholds), 0, 1), 0)
         base = 0.2 + 0.4 * effect.max(axis=1)
         base += 0.1 * np.minimum(fired.sum(axis=1) - 1, 2)
-        base += 0.2 * df['in_typical_position'].astype(bool).to_numpy()
+        support = df['identity_support'] if 'identity_support' in df else pd.Series('', index=df.index)
+        base += np.where(support == 'modomics', 0.2,
+                         np.where(df['in_typical_position'].astype(bool), 0.1, 0.0))
         coverage_score = np.minimum(1.0, np.log10(df['coverage'].to_numpy(np.float64) + 1) / 4.0)
         base *= 0.5 + 0.5 * coverage_score
 

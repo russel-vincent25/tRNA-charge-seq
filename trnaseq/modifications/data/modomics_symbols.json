@@ -1,0 +1,954 @@
+{
+ "_source": "https://genesilico.pl/modomics/api/modifications?format=json (nucleosides only: 5'-monophosphate entries excluded), fetched 2026-10-03",
+ "_fields": "symbol -> short_name, parent (reference_moiety; X or multi-letter = unknown parent)",
+ "symbols": {
+  " ♥": {
+   "short_name": "malonyl-CoApN",
+   "parent": "AUCG"
+  },
+  "!": {
+   "short_name": "cmnm5U",
+   "parent": "U"
+  },
+  "$": {
+   "short_name": "cmnm5s2U",
+   "parent": "U"
+  },
+  "&": {
+   "short_name": "ncm5U",
+   "parent": "U"
+  },
+  "(": {
+   "short_name": "G+",
+   "parent": "G"
+  },
+  ")": {
+   "short_name": "cmnm5Um",
+   "parent": "U"
+  },
+  "*": {
+   "short_name": "ms2i6A",
+   "parent": "A"
+  },
+  ".": {
+   "short_name": "N",
+   "parent": "ACGU"
+  },
+  "1": {
+   "short_name": "mcm5U",
+   "parent": "U"
+  },
+  "2": {
+   "short_name": "s2U",
+   "parent": "U"
+  },
+  "3": {
+   "short_name": "mcm5s2U",
+   "parent": "U"
+  },
+  "4": {
+   "short_name": "s4U",
+   "parent": "U"
+  },
+  "5": {
+   "short_name": "mo5U",
+   "parent": "U"
+  },
+  "6": {
+   "short_name": "t6A",
+   "parent": "A"
+  },
+  "7": {
+   "short_name": "m7G",
+   "parent": "G"
+  },
+  "8": {
+   "short_name": "manQ",
+   "parent": "G"
+  },
+  "9": {
+   "short_name": "galQ",
+   "parent": "G"
+  },
+  ">": {
+   "short_name": "f5C",
+   "parent": "C"
+  },
+  "?": {
+   "short_name": "m5C",
+   "parent": "C"
+  },
+  "A": {
+   "short_name": "A",
+   "parent": "A"
+  },
+  "B": {
+   "short_name": "Cm",
+   "parent": "C"
+  },
+  "C": {
+   "short_name": "C",
+   "parent": "C"
+  },
+  "D": {
+   "short_name": "D",
+   "parent": "U"
+  },
+  "E": {
+   "short_name": "m6t6A",
+   "parent": "A"
+  },
+  "F": {
+   "short_name": "m5s2U",
+   "parent": "U"
+  },
+  "G": {
+   "short_name": "G",
+   "parent": "G"
+  },
+  "H": {
+   "short_name": "xA",
+   "parent": "A"
+  },
+  "I": {
+   "short_name": "I",
+   "parent": "A"
+  },
+  "J": {
+   "short_name": "Um",
+   "parent": "U"
+  },
+  "K": {
+   "short_name": "m1G",
+   "parent": "G"
+  },
+  "L": {
+   "short_name": "m2G",
+   "parent": "G"
+  },
+  "M": {
+   "short_name": "ac4C",
+   "parent": "C"
+  },
+  "N": {
+   "short_name": "xU",
+   "parent": "U"
+  },
+  "O": {
+   "short_name": "m1I",
+   "parent": "A"
+  },
+  "P": {
+   "short_name": "Y",
+   "parent": "U"
+  },
+  "Q": {
+   "short_name": "Q",
+   "parent": "G"
+  },
+  "R": {
+   "short_name": "m2,2G",
+   "parent": "G"
+  },
+  "S": {
+   "short_name": "mnm5s2U",
+   "parent": "U"
+  },
+  "T": {
+   "short_name": "m5U",
+   "parent": "U"
+  },
+  "U": {
+   "short_name": "U",
+   "parent": "U"
+  },
+  "V": {
+   "short_name": "cmo5U",
+   "parent": "U"
+  },
+  "W": {
+   "short_name": "o2yW",
+   "parent": "G"
+  },
+  "X": {
+   "short_name": "acp3U",
+   "parent": "U"
+  },
+  "Y": {
+   "short_name": "yW",
+   "parent": "G"
+  },
+  "Z": {
+   "short_name": "Ym",
+   "parent": "U"
+  },
+  "[": {
+   "short_name": "ms2t6A",
+   "parent": "A"
+  },
+  "]": {
+   "short_name": "m1Y",
+   "parent": "U"
+  },
+  "b": {
+   "short_name": "mchm5Um",
+   "parent": "U"
+  },
+  "e": {
+   "short_name": "ct6A",
+   "parent": "A"
+  },
+  "f": {
+   "short_name": "cmnm5ges2U",
+   "parent": "U"
+  },
+  "h": {
+   "short_name": "mnm5ges2U",
+   "parent": "U"
+  },
+  "l": {
+   "short_name": "ncm5s2U",
+   "parent": "U"
+  },
+  "r": {
+   "short_name": "nchm5U",
+   "parent": "U"
+  },
+  "y": {
+   "short_name": "OHyWy",
+   "parent": "G"
+  },
+  "{": {
+   "short_name": "mnm5U",
+   "parent": "U"
+  },
+  "|": {
+   "short_name": "m2,2Gm",
+   "parent": "G"
+  },
+  "}": {
+   "short_name": "k2C",
+   "parent": "C"
+  },
+  "~": {
+   "short_name": "ncm5Um",
+   "parent": "U"
+  },
+  "¡": {
+   "short_name": "hm5Cm",
+   "parent": "C"
+  },
+  "£": {
+   "short_name": "msms2i6A",
+   "parent": "A"
+  },
+  "¥": {
+   "short_name": "yW-86",
+   "parent": "G"
+  },
+  "§": {
+   "short_name": "mpppN",
+   "parent": "AUCG"
+  },
+  "©": {
+   "short_name": "m7GpppN",
+   "parent": "AUCG"
+  },
+  "«": {
+   "short_name": "ht6A",
+   "parent": "A"
+  },
+  "®": {
+   "short_name": "m2,7GpppN",
+   "parent": "AUCG"
+  },
+  "°": {
+   "short_name": "f5Cm",
+   "parent": "C"
+  },
+  "±": {
+   "short_name": "m2,8A",
+   "parent": "A"
+  },
+  "¶": {
+   "short_name": "m2,2,7GpppN",
+   "parent": "AUCG"
+  },
+  "¾": {
+   "short_name": "inm5U",
+   "parent": "U"
+  },
+  "¿": {
+   "short_name": "C+",
+   "parent": "C"
+  },
+  "Ç": {
+   "short_name": "ho5C",
+   "parent": "C"
+  },
+  "Ð": {
+   "short_name": "acp3D",
+   "parent": "U"
+  },
+  "Þ": {
+   "short_name": "acp3Y",
+   "parent": "U"
+  },
+  "â": {
+   "short_name": "m8A",
+   "parent": "A"
+  },
+  "æ": {
+   "short_name": "m2,7Gm",
+   "parent": "G"
+  },
+  "ÿ": {
+   "short_name": "ms2ct6A",
+   "parent": "A"
+  },
+  "Ħ": {
+   "short_name": "m5Um",
+   "parent": "U"
+  },
+  "Ĳ": {
+   "short_name": "AppppN",
+   "parent": "ACGU"
+  },
+  "œ": {
+   "short_name": "m1Am",
+   "parent": "A"
+  },
+  "š": {
+   "short_name": "OHyWx",
+   "parent": "G"
+  },
+  "Ƒ": {
+   "short_name": "m3Y",
+   "parent": "U"
+  },
+  "ƕ": {
+   "short_name": "tm5s2U",
+   "parent": "U"
+  },
+  "Ɲ": {
+   "short_name": "inm5s2U",
+   "parent": "U"
+  },
+  "Ƣ": {
+   "short_name": "hm5C",
+   "parent": "C"
+  },
+  "ɀ": {
+   "short_name": "5'-OH-N",
+   "parent": "ACGU"
+  },
+  "ɮ": {
+   "short_name": "mchm5U",
+   "parent": "U"
+  },
+  "ɿ": {
+   "short_name": "m2A",
+   "parent": "A"
+  },
+  "ʆ": {
+   "short_name": "xG",
+   "parent": "G"
+  },
+  "ʍ": {
+   "short_name": "Am",
+   "parent": "A"
+  },
+  "ʤ": {
+   "short_name": "s2C",
+   "parent": "C"
+  },
+  "ʩ": {
+   "short_name": "Ar(p)",
+   "parent": "A"
+  },
+  "ʭ": {
+   "short_name": "tm5U",
+   "parent": "U"
+  },
+  "Γ": {
+   "short_name": "ges2U",
+   "parent": "U"
+  },
+  "Δ": {
+   "short_name": "nm5ges2U",
+   "parent": "U"
+  },
+  "Ξ": {
+   "short_name": "NADpN",
+   "parent": "AUCG"
+  },
+  "Ω": {
+   "short_name": "yW-72",
+   "parent": "G"
+  },
+  "α": {
+   "short_name": "m1acp3Y",
+   "parent": "U"
+  },
+  "β": {
+   "short_name": "m4,4Cm",
+   "parent": "C"
+  },
+  "γ": {
+   "short_name": "m2Gm",
+   "parent": "G"
+  },
+  "δ": {
+   "short_name": "m3U",
+   "parent": "U"
+  },
+  "ε": {
+   "short_name": "m1Gm",
+   "parent": "G"
+  },
+  "ζ": {
+   "short_name": "m6,6A",
+   "parent": "A"
+  },
+  "η": {
+   "short_name": "m6,6Am",
+   "parent": "A"
+  },
+  "λ": {
+   "short_name": "m4Cm",
+   "parent": "C"
+  },
+  "μ": {
+   "short_name": "m4,4C",
+   "parent": "C"
+  },
+  "ν": {
+   "short_name": "m4C",
+   "parent": "C"
+  },
+  "ξ": {
+   "short_name": "m1Im",
+   "parent": "A"
+  },
+  "π": {
+   "short_name": "nm5se2U",
+   "parent": "U"
+  },
+  "ρ": {
+   "short_name": "m5D",
+   "parent": "U"
+  },
+  "ς": {
+   "short_name": "oQ",
+   "parent": "G"
+  },
+  "σ": {
+   "short_name": "m3Um",
+   "parent": "U"
+  },
+  "τ": {
+   "short_name": "m5Cm",
+   "parent": "C"
+  },
+  "υ": {
+   "short_name": "mcmo5U",
+   "parent": "U"
+  },
+  "χ": {
+   "short_name": "m6Am",
+   "parent": "A"
+  },
+  "ω": {
+   "short_name": "se2U",
+   "parent": "U"
+  },
+  "ϑ": {
+   "short_name": "GpppN",
+   "parent": "AUCG"
+  },
+  "Ϙ": {
+   "short_name": "m6AppppN",
+   "parent": "ACGU"
+  },
+  "Ϛ": {
+   "short_name": "m6ApppppN",
+   "parent": "ACGU"
+  },
+  "Ϟ": {
+   "short_name": "m7GppppN",
+   "parent": "ACGU"
+  },
+  "Ϩ": {
+   "short_name": "f6A",
+   "parent": "A"
+  },
+  "Ϫ": {
+   "short_name": "hm6A",
+   "parent": "A"
+  },
+  "Ϭ": {
+   "short_name": "ApppppN",
+   "parent": "ACGU"
+  },
+  "Ϯ": {
+   "short_name": "m6ApppN",
+   "parent": "ACGU"
+  },
+  "Ͽ": {
+   "short_name": "mcmo5Um",
+   "parent": "U"
+  },
+  "Ж": {
+   "short_name": "m6A",
+   "parent": "A"
+  },
+  "Ч": {
+   "short_name": "i6A",
+   "parent": "A"
+  },
+  "Ш": {
+   "short_name": "Im",
+   "parent": "A"
+  },
+  "Щ": {
+   "short_name": "m3C",
+   "parent": "C"
+  },
+  "Ю": {
+   "short_name": "inm5Um",
+   "parent": "U"
+  },
+  "Ѣ": {
+   "short_name": "m1A",
+   "parent": "A"
+  },
+  "Ѩ": {
+   "short_name": "Xm",
+   "parent": "X"
+  },
+  "Ѯ": {
+   "short_name": "xX",
+   "parent": "X"
+  },
+  "Ѵ": {
+   "short_name": "xC",
+   "parent": "C"
+  },
+  "Ѷ": {
+   "short_name": "cnm5U",
+   "parent": "U"
+  },
+  "Ғ": {
+   "short_name": "N2'3'cp",
+   "parent": "AUCG"
+  },
+  "Ỽ": {
+   "short_name": "io6A",
+   "parent": "A"
+  },
+  "†": {
+   "short_name": "imG-14",
+   "parent": "G"
+  },
+  "€": {
+   "short_name": "imG",
+   "parent": "G"
+  },
+  "ℑ": {
+   "short_name": "Gr(p)",
+   "parent": "G"
+  },
+  "℘": {
+   "short_name": "cm5s2U",
+   "parent": "U"
+  },
+  "ℵ": {
+   "short_name": "ac4Cm",
+   "parent": "C"
+  },
+  "⇑": {
+   "short_name": "yW-58",
+   "parent": "G"
+  },
+  "⇓": {
+   "short_name": "ac6A",
+   "parent": "A"
+  },
+  "∏": {
+   "short_name": "s2Um",
+   "parent": "U"
+  },
+  "∑": {
+   "short_name": "mimG",
+   "parent": "G"
+  },
+  "√": {
+   "short_name": "hn6A",
+   "parent": "A"
+  },
+  "∝": {
+   "short_name": "ho5U",
+   "parent": "U"
+  },
+  "∞": {
+   "short_name": "ms2m6A",
+   "parent": "A"
+  },
+  "∠": {
+   "short_name": "m2,2,7G",
+   "parent": "G"
+  },
+  "∨": {
+   "short_name": "m2,7G",
+   "parent": "G"
+  },
+  "∩": {
+   "short_name": "mcm5Um",
+   "parent": "U"
+  },
+  "∪": {
+   "short_name": "nm5U",
+   "parent": "U"
+  },
+  "∫": {
+   "short_name": "nm5s2U",
+   "parent": "U"
+  },
+  "∴": {
+   "short_name": "Qbase",
+   "parent": "G"
+  },
+  "≅": {
+   "short_name": "mnm5se2U",
+   "parent": "U"
+  },
+  "≈": {
+   "short_name": "ms2hn6A",
+   "parent": "A"
+  },
+  "≠": {
+   "short_name": "ms2io6A",
+   "parent": "A"
+  },
+  "≡": {
+   "short_name": "g6A",
+   "parent": "A"
+  },
+  "≥": {
+   "short_name": "chm5U",
+   "parent": "U"
+  },
+  "⊄": {
+   "short_name": "gluQ",
+   "parent": "G"
+  },
+  "⊆": {
+   "short_name": "OHyW",
+   "parent": "G"
+  },
+  "⊇": {
+   "short_name": "imG2",
+   "parent": "G"
+  },
+  "⊥": {
+   "short_name": "cmnm5se2U",
+   "parent": "U"
+  },
+  "◊": {
+   "short_name": "cm5U",
+   "parent": "U"
+  },
+  "♠": {
+   "short_name": "CoApN",
+   "parent": "AUCG"
+  },
+  "♣": {
+   "short_name": "acCoApN",
+   "parent": "AUCG"
+  },
+  "♦": {
+   "short_name": "succinyl-CoApN",
+   "parent": "AUCG"
+  },
+  "㐀": {
+   "short_name": "AF2",
+   "parent": "A"
+  },
+  "㐁": {
+   "short_name": "A5L",
+   "parent": "A"
+  },
+  "㐃": {
+   "short_name": "CSL",
+   "parent": "C"
+  },
+  "㐄": {
+   "short_name": "CFZ",
+   "parent": "C"
+  },
+  "㐅": {
+   "short_name": "CFL",
+   "parent": "C"
+  },
+  "㐇": {
+   "short_name": "XUG",
+   "parent": "G"
+  },
+  "㐋": {
+   "short_name": "UFT",
+   "parent": "U"
+  },
+  "㐌": {
+   "short_name": "UMS",
+   "parent": "U"
+  },
+  "㐏": {
+   "short_name": "N6G",
+   "parent": "X"
+  },
+  "㐐": {
+   "short_name": "7AT",
+   "parent": "X"
+  },
+  "㐑": {
+   "short_name": "2AD",
+   "parent": "A"
+  },
+  "㐒": {
+   "short_name": "A9Z",
+   "parent": "A"
+  },
+  "㐓": {
+   "short_name": "8AN",
+   "parent": "A"
+  },
+  "㐕": {
+   "short_name": "A7C",
+   "parent": "X"
+  },
+  "㐖": {
+   "short_name": "A7E",
+   "parent": "X"
+  },
+  "㐗": {
+   "short_name": "45A",
+   "parent": "A"
+  },
+  "㐙": {
+   "short_name": "MTU",
+   "parent": "X"
+  },
+  "㐜": {
+   "short_name": "LCA",
+   "parent": "A"
+  },
+  "㐞": {
+   "short_name": "O2Z",
+   "parent": "X"
+  },
+  "㐟": {
+   "short_name": "ANZ",
+   "parent": "A"
+  },
+  "㐠": {
+   "short_name": "A5O",
+   "parent": "A"
+  },
+  "㐡": {
+   "short_name": "ADS",
+   "parent": "A"
+  },
+  "㐩": {
+   "short_name": "10C",
+   "parent": "C"
+  },
+  "㐪": {
+   "short_name": "RY",
+   "parent": "C"
+  },
+  "㐫": {
+   "short_name": "73W",
+   "parent": "C"
+  },
+  "㐬": {
+   "short_name": "CBV",
+   "parent": "C"
+  },
+  "㐭": {
+   "short_name": "5CF",
+   "parent": "C"
+  },
+  "㐯": {
+   "short_name": "N5M",
+   "parent": "C"
+  },
+  "㐱": {
+   "short_name": "LCC",
+   "parent": "C"
+  },
+  "㐲": {
+   "short_name": "CAR",
+   "parent": "C"
+  },
+  "㐵": {
+   "short_name": "GMX",
+   "parent": "G"
+  },
+  "㐶": {
+   "short_name": "TG",
+   "parent": "G"
+  },
+  "㐸": {
+   "short_name": "GRB",
+   "parent": "G"
+  },
+  "㐹": {
+   "short_name": "LCG",
+   "parent": "G"
+  },
+  "㐺": {
+   "short_name": "GAO",
+   "parent": "G"
+  },
+  "㐻": {
+   "short_name": "2SG",
+   "parent": "G"
+  },
+  "㐽": {
+   "short_name": "G3A",
+   "parent": "G"
+  },
+  "㐿": {
+   "short_name": "URU",
+   "parent": "U"
+  },
+  "㑀": {
+   "short_name": "M1Y",
+   "parent": "X"
+  },
+  "㑁": {
+   "short_name": "NF2",
+   "parent": "X"
+  },
+  "㑂": {
+   "short_name": "3TD",
+   "parent": "X"
+  },
+  "㑃": {
+   "short_name": "B8N",
+   "parent": "U"
+  },
+  "㑄": {
+   "short_name": "C4J",
+   "parent": "X"
+  },
+  "㑆": {
+   "short_name": "1RN",
+   "parent": "X"
+  },
+  "㑇": {
+   "short_name": "U5M",
+   "parent": "U"
+  },
+  "㑈": {
+   "short_name": "U5R",
+   "parent": "U"
+  },
+  "㑉": {
+   "short_name": "US5",
+   "parent": "X"
+  },
+  "㑊": {
+   "short_name": "ONE",
+   "parent": "X"
+  },
+  "㑋": {
+   "short_name": "PYO",
+   "parent": "X"
+  },
+  "㑌": {
+   "short_name": "U4M",
+   "parent": "U"
+  },
+  "㑍": {
+   "short_name": "UFB",
+   "parent": "U"
+  },
+  "㑏": {
+   "short_name": "UOB",
+   "parent": "U"
+  },
+  "㑒": {
+   "short_name": "TLN",
+   "parent": "U"
+  },
+  "㑓": {
+   "short_name": "B8H",
+   "parent": "X"
+  },
+  "㑔": {
+   "short_name": "UAR",
+   "parent": "U"
+  },
+  "㑕": {
+   "short_name": "U37",
+   "parent": "U"
+  },
+  "㑖": {
+   "short_name": "US3",
+   "parent": "X"
+  },
+  "串": {
+   "short_name": "A43",
+   "parent": "A"
+  },
+  "临": {
+   "short_name": "MU1",
+   "parent": "U"
+  },
+  "乕": {
+   "short_name": "NYM",
+   "parent": "U"
+  },
+  "乸": {
+   "short_name": "MU2",
+   "parent": "U"
+  },
+  "亃": {
+   "short_name": "AD2",
+   "parent": "A"
+  },
+  "亞": {
+   "short_name": "G38",
+   "parent": "G"
+  },
+  "亱": {
+   "short_name": "MU3",
+   "parent": "U"
+  },
+  "亶": {
+   "short_name": "2HG",
+   "parent": "G"
+  },
+  "从": {
+   "short_name": "2HA",
+   "parent": "A"
+  },
+  "令": {
+   "short_name": "P1T",
+   "parent": "U"
+  },
+  "仩": {
+   "short_name": "D2C",
+   "parent": "C"
+  },
+  "佨": {
+   "short_name": "MU4",
+   "parent": "U"
+  },
+  "＃": {
+   "short_name": "Gm",
+   "parent": "G"
+  }
+ }
+}
