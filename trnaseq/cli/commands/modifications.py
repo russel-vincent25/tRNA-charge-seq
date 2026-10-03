@@ -119,6 +119,8 @@ def run_modifications(args):
     )
     analyzer.load_reference(args.reference)
 
+    per_sample_calls = {}
+    known_by_trna = {}
     for sample_name, pscm_dict in all_pscm.items():
         print(f"\nProcessing {sample_name} ({len(pscm_dict)} tRNAs)...")
 
@@ -191,10 +193,12 @@ def run_modifications(args):
                 analysis['signatures'], trna_name,
                 ref_seq=ref_seq, anticodon_linear_start=ac_start,
             )
-            known_mods = (annotator.get_known_mods_linear(
-                trna_name, ref_seq, anticodon_linear_start=ac_start,
-                include_donor_anticodon_loop=True)
-                if ref_seq else None)
+            if trna_name not in known_by_trna:
+                known_by_trna[trna_name] = (annotator.get_known_mods_linear(
+                    trna_name, ref_seq, anticodon_linear_start=ac_start,
+                    include_donor_anticodon_loop=True)
+                    if ref_seq else None)
+            known_mods = known_by_trna[trna_name]
 
             mod_calls = caller.call_all(
                 trna_name, annotated, pscm_df, ref_seq,
@@ -212,11 +216,19 @@ def run_modifications(args):
         calls_df = (caller.finalize_calls(
             pd.concat(all_mod_calls, ignore_index=True), n_tests)
             if all_mod_calls else pd.DataFrame())
+        per_sample_calls[sample_name] = calls_df
         if not calls_df.empty:
             _save_df(calls_df, sample_dir / 'modification_calls', args.csv)
             print(f"  {len(calls_df)} modification calls")
         else:
             print(f"  No modification calls")
+
+    from trnaseq.modifications.novel_sites import summarize_novel_sites
+    novel_sites = summarize_novel_sites(
+        per_sample_calls, known_mods=known_by_trna, ref_dict=extractor.ref_dict)
+    if not novel_sites.empty:
+        _save_df(novel_sites, output_dir / 'novel_sites', write_csv=True)
+        print(f"\n{len(novel_sites)} novel sites -> {output_dir / 'novel_sites.csv'}")
 
     print(f"\nDone! Results saved to {output_dir}/")
 

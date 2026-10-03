@@ -14,6 +14,7 @@ Panels (in order):
     3. Modification landscape heatmap (tRNA x absolute position mapped to longest tRNA)
     4. Modification call reproducibility (stacked bar grouped by condition)
     5. Synthetic control error rate (only if synthetics present)
+    6. Novel sites (only if ``novel_sites`` given and non-empty)
 """
 
 import numpy as np
@@ -27,6 +28,7 @@ from plotly.subplots import make_subplots
 
 from trnaseq.qc._common import (
     ReportContext,
+    export_panel_data,
     fig_to_div,
     render_html_shell,
     render_panel,
@@ -50,6 +52,7 @@ class ModificationReportGenerator:
         summary_df: Optional[pd.DataFrame] = None,
         source_prefixes: Optional[dict] = None,
         context: Optional[ReportContext] = None,
+        novel_sites: Optional[pd.DataFrame] = None,
     ):
         """
         Parameters
@@ -68,6 +71,8 @@ class ModificationReportGenerator:
             modification_summary (one row per sample).
         source_prefixes : dict, optional
             {prefix: category} for classifying tRNA sources (e.g. synthetic).
+        novel_sites : DataFrame, optional
+            Output of ``trnaseq.modifications.novel_sites.summarize_novel_sites``.
         """
         self.per_sample_calls = per_sample_calls
         self.aggregated_calls = aggregated_calls
@@ -77,6 +82,8 @@ class ModificationReportGenerator:
         self.summary_df = summary_df
         self.source_prefixes = source_prefixes
         self.context = context
+        self.novel_sites = novel_sites
+        self._output_dir: Optional[Path] = None
 
         # Build position-mapping lookup once; reused by panels 3 & 5.
         self._pos_map_cache: Optional[Dict[str, np.ndarray]] = None
@@ -90,6 +97,7 @@ class ModificationReportGenerator:
         """Generate self-contained HTML report at *output_path*."""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._output_dir = output_path.parent
 
         panels = []
 
@@ -117,6 +125,11 @@ class ModificationReportGenerator:
         p5 = self._panel_synthetic_false_positives()
         if p5:
             panels.append(p5)
+
+        # 6. Novel sites (unexplained calls, one row per site)
+        p6 = self._panel_novel_sites()
+        if p6:
+            panels.append(p6)
 
         body = '\n'.join(panels) if panels else '<p>No modification data available for report.</p>'
 
@@ -753,3 +766,74 @@ class ModificationReportGenerator:
 
         div = self._fig_to_div(fig)
         return render_panel('Synthetic Control Error Rate', div, anchor='mod-synthetic')
+
+    # ------------------------------------------------------------------
+    # Panel 6: novel sites
+    # ------------------------------------------------------------------
+
+    MAX_NOVEL_ROWS = 25
+
+    def _panel_novel_sites(self):
+        """Where unexplained calls sit relative to known modifications, and a
+        table of the most frequently observed novel sites."""
+        ns = self.novel_sites
+        if ns is None or ns.empty:
+            return ''
+
+        offset = ns['nearest_known_offset']
+        ns = ns.assign(_where=np.where(
+            offset.notna(),
+            offset.fillna(0).astype(int).map(
+                lambda o: f'known mod at {o:+d}' if o else 'known mod at same base'),
+            'none within 3 nt'))
+        order = sorted((w for w in ns['_where'].unique() if w != 'none within 3 nt'),
+                       key=lambda w: (w != 'known mod at same base', w)) + ['none within 3 nt']
+
+        palette = self._discrete_palette()
+        bar = go.Figure()
+        for i, (channel, g) in enumerate(ns.groupby('dominant_channel')):
+            counts = g['_where'].value_counts().reindex(order, fill_value=0)
+            bar.add_trace(go.Bar(x=order, y=counts.values, name=str(channel),
+                                 marker_color=palette[i % len(palette)]))
+        bar.update_layout(
+            title='Novel sites by dominant channel and nearest known modification',
+            barmode='stack', yaxis_title='Unique sites',
+            xaxis_title='Nearest MODOMICS modification (offset from implicated base)',
+            height=380,
+        )
+
+        top = ns.head(self.MAX_NOVEL_ROWS)
+        near = [f"{n} ({int(o):+d})" if n else '' for n, o in
+                zip(top['nearest_known'], top['nearest_known_offset'].fillna(0))]
+        rates = [f"{m:.2f} / {d:.2f} / {r:.0f}%" for m, d, r in
+                 zip(top['median_mismatch_rate'], top['median_gap_rate'], top['median_rt_stop_pct'])]
+        table = go.Figure(go.Table(
+            columnwidth=[150, 45, 30, 40, 60, 140, 90, 90, 90, 110],
+            header=dict(values=['tRNA', 'pos', 'ref', 'obs', 'samples', 'channels',
+                                'substitutions', 'mm / del / stop', 'nearest known',
+                                'labelled elsewhere'],
+                        fill_color='#6c5ce7', font=dict(color='white'), align='left'),
+            cells=dict(values=[top['trna_name'].str.replace(r'^.*tRNA-', '', regex=True),
+                               top['position'], top['ref_nt'], top['n_observations'],
+                               top['n_samples'], top['channels'], top['substitutions'],
+                               rates, near, top['labelled_elsewhere']],
+                       align='left', height=24),
+        ))
+        table.update_layout(height=60 + 26 * len(top), margin=dict(t=10, b=10))
+
+        n_near = int(ns['nearest_known'].astype(bool).sum())
+        finding = (f"{len(ns)} novel sites ({int(ns['n_observations'].sum())} observations); "
+                   f"{n_near} lie within 3 nt of a known modification and are more likely a "
+                   f"positional offset than new chemistry.")
+        csv_path = (export_panel_data(ns.drop(columns='_where'), self._output_dir, 'novel_sites')
+                    if self._output_dir else None)
+        return render_panel(
+            'Novel Sites', self._fig_to_div(bar) + self._fig_to_div(table),
+            anchor='mod-novel',
+            description=('Calls with no MODOMICS modification at the base their signal '
+                         'implicates and no matching substitution pattern, collapsed across '
+                         'samples. Channels and substitutions are counts over observations; '
+                         f'the table shows the {self.MAX_NOVEL_ROWS} most observed sites.'),
+            finding=finding,
+            csv_path=csv_path,
+        )

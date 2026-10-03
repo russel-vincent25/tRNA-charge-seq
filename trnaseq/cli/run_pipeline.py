@@ -111,6 +111,7 @@ try:
     )
     from trnaseq.modifications.modomics import MODOMICSAnnotator
     from trnaseq.modifications.channel_priors import load_channel_priors
+    from trnaseq.modifications.novel_sites import summarize_novel_sites
     MODIFICATIONS_AVAILABLE = True
 except ImportError:
     MODIFICATIONS_AVAILABLE = False
@@ -1685,6 +1686,7 @@ class PreprocessingPipeline:
 
             per_sample_calls = {}
             sample_call_counts = []
+            known_by_trna = {}
 
             for sample_name, pscm_dict in all_pscm.items():
                 caller = make_caller(sample_backgrounds[sample_name])
@@ -1716,16 +1718,19 @@ class PreprocessingPipeline:
                     ref_info = analyzer.reference_sequences.get(trna_name, {})
                     ref_seq = ref_info.get('seq')
 
-                    # Get known mods: alignment-based (preferred) or heuristic fallback
-                    known_mods_for_trna = None
-                    if ref_seq:
-                        ac_pos = ac_positions.get(trna_name)
-                        ac_start = ac_pos[0] if ac_pos is not None else None
-                        known_mods_for_trna = annotator.get_known_mods_linear(
-                            trna_name, ref_seq,
-                            anticodon_linear_start=ac_start,
-                            include_donor_anticodon_loop=True,
-                        )
+                    # Get known mods: alignment-based (preferred) or heuristic
+                    # fallback. Same for every sample, so mapped once per tRNA.
+                    if trna_name not in known_by_trna:
+                        known_by_trna[trna_name] = None
+                        if ref_seq:
+                            ac_pos = ac_positions.get(trna_name)
+                            ac_start = ac_pos[0] if ac_pos is not None else None
+                            known_by_trna[trna_name] = annotator.get_known_mods_linear(
+                                trna_name, ref_seq,
+                                anticodon_linear_start=ac_start,
+                                include_donor_anticodon_loop=True,
+                            )
+                    known_mods_for_trna = known_by_trna[trna_name]
 
                     calls_df = caller.call_all(
                         trna_name,
@@ -1802,6 +1807,18 @@ class PreprocessingPipeline:
                     self.log("  No aggregated modification calls.")
             else:
                 self.log("  No replicate groups found — skipping aggregation.")
+
+            # Novel sites: unexplained calls collapsed to one row per site
+            novel_sites = summarize_novel_sites(
+                per_sample_calls, replicate_groups,
+                known_mods=known_by_trna, ref_dict=extractor.ref_dict,
+            )
+            if not novel_sites.empty:
+                _save_df(novel_sites, output_dir / 'novel_sites', write_csv=True)
+                self.log(f"  Novel sites: {len(novel_sites)} unique "
+                         f"({int(novel_sites['n_observations'].sum())} observations); "
+                         f"{int(novel_sites['nearest_known'].astype(bool).sum())} within 3 nt "
+                         f"of a known modification — see novel_sites.csv")
 
             # ==== Phase 5: Summary CSV ====
             self.log("  Phase 5/7: Generating modification summary...")
@@ -1912,6 +1929,7 @@ class PreprocessingPipeline:
                         context=self._build_report_context(),
                         summary_df=summary_df,
                         source_prefixes=source_prefixes,
+                        novel_sites=novel_sites,
                     )
                     qc_dir = self.project_dir / 'qc_reports'
                     qc_dir.mkdir(parents=True, exist_ok=True)
