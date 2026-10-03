@@ -2,7 +2,7 @@
 
 **Status (2026-10-03):** detection (change 4, §1–§5), site identity (change 4b, §6–§7) and the
 novel-site lookup fixes and table (§8) are implemented. The novel-site predictor (§9) is a
-prototype. The N-masked-reference fix (§8) is done. Change 5 is in progress; change 6 is not started.
+prototype. The N-masked-reference fix (§8) and change 5 (§10) are done. Change 6 is not started.
 
 Evidence comes from the 2024-06-19 four-RT run (4 enzymes × 3 temperatures × 3 replicates,
 `ecoli.fa`, 49 references). Only `mismatch_profile.parquet` and `rt_profile.parquet` were used:
@@ -371,6 +371,23 @@ What would answer these:
   calibrates the background model directly. Essential enzymes (trmD for m1G37, tilS for k2C34)
   would need depletion strains.
 
-Not yet done: change 5 (per-channel rates and `dominant_pattern` in the aggregates; also make
-`ReplicateAggregator` group by site rather than by label, since 5 of 447 site×condition groups split
-when replicates disagree) and change 6 (enzyme-agnostic regression tests on a four-RT fixture).
+## 10. Change 5: per-channel aggregates, grouped by site
+
+`ReplicateAggregator` now groups calls by **site** (tRNA, position) within each condition, instead
+of by (site, label). `aggregated_modifications` and `consensus_modifications` gain:
+
+- **Per-channel means:** `mean_gap_rate` and `mean_rt_stop_pct` alongside `mean_mismatch_rate`.
+- **Pattern and channel:** `dominant_pattern` and `dominant_channel` (mode over replicates), plus
+  `channels_fired` (counts).
+- **Labels:**
+  - `labels` lists every label replicates gave, with counts.
+  - `modification` is the most common resolved label; it is `novel_candidate` only if no replicate
+    resolved one.
+  - `source`, `identity_support`, `modified_position` and `rt_enzyme` describe the chosen label.
+- **One p-value per replicate** enters the Fisher combination.
+
+On the four-RT run, the 5 site×condition groups previously split by label are now single rows.
+All five are acp3U47 vs m7G46: an RT stop at 47 points back to m7G46, a deletion stays on acp3U47.
+3 of the 5 now reach consensus; the 2+1 split had denied it.
+
+Not yet done: change 6 (enzyme-agnostic regression tests on a four-RT fixture).

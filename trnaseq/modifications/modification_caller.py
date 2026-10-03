@@ -1220,9 +1220,14 @@ class ModificationCaller:
 class ReplicateAggregator:
     """Aggregate per-sample modification calls across biological replicates.
 
+    Calls are grouped by **site** (tRNA, position), not by label: replicates
+    can label the same site differently (e.g. MODOMICS vs novel when a
+    different channel dominates), and grouping by label would split one site
+    into rows that each miss consensus.
+
     Uses Fisher's combined probability test to merge p-values from
     independent replicate samples and a "double-sieve" filter:
-    1. The modification must be detected in >= *min_replicates* samples.
+    1. The site must be detected in >= *min_replicates* samples.
     2. The Fisher combined p-value must be < *alpha*.
 
     Produces two outputs:
@@ -1235,6 +1240,20 @@ class ReplicateAggregator:
         self.min_replicates = min_replicates
         self.alpha = alpha
 
+    @staticmethod
+    def _mode(values, default=''):
+        values = [v for v in values if isinstance(v, str) and v]
+        return pd.Series(values).mode().iloc[0] if values else default
+
+    @staticmethod
+    def _counts(values) -> str:
+        values = pd.Series([v for v in values if isinstance(v, str) and v])
+        return '; '.join(f'{k}:{n}' for k, n in values.value_counts().items())
+
+    @staticmethod
+    def _mean(grp, col):
+        return float(grp[col].mean()) if col in grp.columns else np.nan
+
     def aggregate(
         self,
         per_sample_calls: Dict[str, pd.DataFrame],
@@ -1245,14 +1264,18 @@ class ReplicateAggregator:
         Args:
             per_sample_calls: {sample_name_unique: calls_df} — each
                 DataFrame has columns including trna_name, position,
-                modification, mismatch_rate, fold_change, coverage,
-                confidence, pvalue.
+                modification, mismatch_rate, gap_rate, rt_stop_pct,
+                fold_change, coverage, confidence, pvalue.
             replicate_groups: {condition_name: [sample_name_unique, ...]}.
 
         Returns:
-            DataFrame with aggregated calls (one row per condition x
-            trna x position x modification).  Includes
-            ``consensus_call`` boolean column.
+            DataFrame with one row per condition x trna x position:
+            ``modification`` (most common label among replicates that
+            resolved one, else ``novel_candidate``), ``labels`` (all labels
+            with counts), per-channel means (``mean_mismatch_rate``,
+            ``mean_gap_rate``, ``mean_rt_stop_pct``), ``dominant_pattern``,
+            ``dominant_channel``, ``channels_fired`` (counts), Fisher
+            statistics and ``consensus_call``.
         """
         rows: List[dict] = []
 
@@ -1263,21 +1286,19 @@ class ReplicateAggregator:
             for snu in members:
                 df = per_sample_calls.get(snu)
                 if df is not None and not df.empty:
-                    group_dfs.append(df)
+                    group_dfs.append(df.assign(_replicate=snu))
 
             if not group_dfs:
                 continue
 
             combined = pd.concat(group_dfs, ignore_index=True)
 
-            # Group by modification site
-            for (trna, pos, mod), grp in combined.groupby(
-                ['trna_name', 'position', 'modification']
-            ):
-                n_detected = int(grp.shape[0])
+            for (trna, pos), grp in combined.groupby(['trna_name', 'position']):
+                n_detected = int(grp['_replicate'].nunique())
 
-                # Fisher combined p-value
-                pvals = grp['pvalue'].dropna().values.astype(float)
+                # Fisher combined p-value, one p per replicate
+                pvals = (grp.groupby('_replicate')['pvalue'].min().dropna()
+                         .values.astype(float))
                 pvals = np.clip(pvals, 1e-300, 1.0)
                 if len(pvals) >= 2:
                     _, fisher_p = combine_pvalues(pvals, method='fisher')
@@ -1286,10 +1307,14 @@ class ReplicateAggregator:
                 else:
                     fisher_p = np.nan
 
-                mean_mm = float(grp['mismatch_rate'].mean())
-                mean_fc = float(grp['fold_change'].mean()) if 'fold_change' in grp.columns else np.nan
-                mean_cov = float(grp['coverage'].mean())
-                mean_conf = float(grp['confidence'].mean())
+                # Label: most common resolved label; novel only if none resolved
+                if 'source' in grp.columns:
+                    resolved = grp[grp['source'] != 'novel_candidate']
+                else:
+                    resolved = grp
+                labelled = resolved if not resolved.empty else grp
+                modification = self._mode(labelled['modification'], 'novel_candidate')
+                chosen = labelled[labelled['modification'] == modification]
 
                 consensus = (
                     n_detected >= self.min_replicates
@@ -1297,23 +1322,35 @@ class ReplicateAggregator:
                     and fisher_p < self.alpha
                 )
 
-                rows.append({
+                row = {
                     'sample_name': condition,
                     'trna_name': trna,
                     'position': pos,
-                    'modification': mod,
+                    'modification': modification,
+                    'labels': self._counts(grp['modification']),
                     'n_replicates_detected': n_detected,
                     'n_replicates_total': n_total,
                     'fisher_combined_pvalue': fisher_p,
                     'fisher_significant': (
                         not np.isnan(fisher_p) and fisher_p < self.alpha
                     ),
-                    'mean_mismatch_rate': mean_mm,
-                    'mean_fold_change': mean_fc,
-                    'mean_coverage': mean_cov,
-                    'mean_confidence': mean_conf,
+                    'mean_mismatch_rate': self._mean(grp, 'mismatch_rate'),
+                    'mean_gap_rate': self._mean(grp, 'gap_rate'),
+                    'mean_rt_stop_pct': self._mean(grp, 'rt_stop_pct'),
+                    'dominant_pattern': self._mode(grp.get('dominant_pattern', [])),
+                    'dominant_channel': self._mode(grp.get('dominant_channel', [])),
+                    'channels_fired': self._counts(grp.get('channels_fired', [])),
+                    'mean_fold_change': self._mean(grp, 'fold_change'),
+                    'mean_coverage': self._mean(grp, 'coverage'),
+                    'mean_confidence': self._mean(grp, 'confidence'),
                     'consensus_call': consensus,
-                })
+                }
+                for col in ('source', 'identity_support', 'rt_enzyme'):
+                    if col in chosen.columns:
+                        row[col] = self._mode(chosen[col].dropna().astype(str), None)
+                if 'modified_position' in chosen.columns:
+                    row['modified_position'] = int(chosen['modified_position'].mode().iloc[0])
+                rows.append(row)
 
         if not rows:
             return pd.DataFrame()
