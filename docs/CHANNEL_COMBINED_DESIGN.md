@@ -2,7 +2,7 @@
 
 **Status (2026-10-03):** detection (change 4, §1–§5), site identity (change 4b, §6–§7) and the
 novel-site lookup fixes and table (§8) are implemented. The novel-site predictor (§9) is a
-prototype. The N-masked-reference fix (§8) and change 5 (§10) are done. Change 6 is not started.
+prototype. The N-masked-reference fix (§8), change 5 (§10) and change 6 (§11) are done; every item in the spec's "Done when" list is met.
 
 Evidence comes from the 2024-06-19 four-RT run (4 enzymes × 3 temperatures × 3 replicates,
 `ecoli.fa`, 49 references). Only `mismatch_profile.parquet` and `rt_profile.parquet` were used:
@@ -390,4 +390,45 @@ On the four-RT run, the 5 site×condition groups previously split by label are n
 All five are acp3U47 vs m7G46: an RT stop at 47 points back to m7G46, a deletion stays on acp3U47.
 3 of the 5 now reach consensus; the 2+1 split had denied it.
 
-Not yet done: change 6 (enzyme-agnostic regression tests on a four-RT fixture).
+## 11. Change 6: regression test on real four-RT data
+
+`tests/data/four_rt_fixture.parquet` (156 KB) holds per-position counts for 5 tRNAs × 36 four-RT
+libraries, taken from stage 6's `mismatch_profile` + `rt_profile`:
+
+- **Arg-ACG:** all channels.
+- **Lys-TTT:** the spec's example, position 47.
+- **Phe-GAA:** RT-stop dominant.
+- **Pro-TGG:** deletion dominant.
+- **Leu-GAG:** no deletions.
+
+`tests/test_four_rt_regression.py` runs the stage 6 calling path on it in about 7 s. Following
+decision D, every assertion is enzyme-agnostic:
+
+| test | asserts |
+|---|---|
+| fixture exercises the problem | mismatch-only recall is uneven across enzymes (0.26–0.49) |
+| recall even across enzymes | every enzyme ≥ 0.95, spread ≤ 0.05, and above mismatch-only |
+| no regression | every substitution site is still called, with `mismatch` in `channels_fired` |
+| calibrated on real null | fitted background: median ≤ 2% at p<0.01; single binomial rate: more than 2× that |
+| enzyme label never changes detection | same sites with and without `rt_enzyme` |
+
+**Checks on the test itself:**
+
+- **It discriminates.** With deletion and RT stop disabled (a mismatch-only caller), recall is
+  0.26–0.49 and the test fails.
+- **It holds on the full dataset.** With `TRNASEQ_FOUR_RT_DIR` set, the recall test repeats on all
+  49 tRNAs; it passed in 30 s. The spec's ordering ("Indura most, TGIRT least") is not asserted.
+  It is a property of the baseline, not of the fix, and the Maxima/TGIRT gap was 3% (§3).
+
+## CHANNEL_FIX_SPEC "Done when"
+
+- [x] `rt_enzyme` / `rt_temp` flow from config to caller, `null`-safe (`824f1fa`)
+- [x] `combined` is the default; per-modification override retained (`824f1fa`)
+- [x] Per-enzyme priors derived from the four-RT data, not hand-set (`824f1fa`)
+- [x] `combined` aggregation semantics documented, with a per-channel background model (§1–§5)
+- [x] All three channel rates present in the aggregate outputs (`1597ee4`)
+- [x] Regression test passes. The spec's enzyme ordering was replaced by enzyme-agnostic
+  assertions (decision D).
+- [x] Existing tests still pass (298 passed, 1 skipped)
+
+Remaining open items are listed under §7 "Open items from 4b" and in §9.
