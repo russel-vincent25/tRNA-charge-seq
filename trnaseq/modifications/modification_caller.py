@@ -24,6 +24,8 @@ References:
 - Hauenschild et al. 2015 (NAR) - Modification signatures
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
@@ -34,6 +36,8 @@ from scipy.special import expit, logit
 from scipy.stats import binomtest, combine_pvalues
 
 from .channel_priors import CHANNELS, DERIVATION_THRESHOLDS, load_channel_priors
+
+logger = logging.getLogger(__name__)
 
 SIGNATURE_TYPES = ('mismatch', 'rt_stop', 'gap', 'combined')
 
@@ -478,13 +482,31 @@ class ChannelBackground:
     Attributes:
         mean: Null event rate per read (substitution, deletion or RT stop).
         rho: Overdispersion in [0, 1); 0 means binomial.
-        source: 'synthetic', 'empirical_bulk' or 'fixed'.
+        source: Which positions the fit used -- 'synthetic', 'empirical_bulk',
+            'fixed' or 'default'.
         n_positions: Positions the fit used.
+        converged: True only when the maximum-likelihood fit converged.
+            ``False`` marks a *degraded* null: *rho* did not come from the
+            likelihood and p-values from it are less trustworthy.
+        fit_status: How *rho* was obtained.
+
+            - ``'ok'``          -- ML fit converged.
+            - ``'nonconvergence'`` -- Nelder-Mead failed; *rho* is the
+              method-of-moments estimate (see :func:`_moment_rho`).
+            - ``'no_events'``   -- zero events in the sample; *mean* is a
+              half-event pseudocount and *rho* carries no information.
+            - ``'default'``     -- no usable positions at all; *mean* is the
+              hard-coded 0.001 default.
+            - ``'pooled_rho'``  -- *rho* was replaced by the cross-sample
+              pooled value for this channel
+              (:func:`pool_channel_backgrounds`).
     """
     mean: float
     rho: float = 0.0
     source: str = 'fixed'
     n_positions: int = 0
+    converged: bool = True
+    fit_status: str = 'ok'
 
     def sf(self, k, n) -> np.ndarray:
         """P(X >= k) under the null, vectorised over positions."""
@@ -521,25 +543,117 @@ def _channel_counts(mat: np.ndarray, ref_seq: str):
     return cov, counts, masks
 
 
-def _fit_beta_binomial(k: np.ndarray, n: np.ndarray) -> Tuple[float, float]:
-    """ML fit of (mean, rho) for a beta-binomial; falls back to binomial."""
+def _moment_rho(k: np.ndarray, n: np.ndarray, mu: float) -> float:
+    """Method-of-moments overdispersion (intra-class correlation).
+
+    Used only as the fallback when the ML fit fails. Under the common
+    correlation model Var(k_i) = n_i mu (1 - mu) [1 + (n_i - 1) rho], so the
+    Pearson chi-square statistic
+
+        S = sum_i (k_i - n_i mu)^2 / (n_i mu (1 - mu))
+
+    has expectation N + rho * sum_i (n_i - 1), giving
+
+        rho_hat = (S - N) / sum_i (n_i - 1).
+
+    This is the standard quasi-likelihood / ANOVA moment estimator for
+    clustered binomial data with unequal cluster sizes (Kleinman, *JASA*
+    1973). It is closed-form, always available, and -- unlike ``rho = 0``,
+    which asserts no overdispersion at all -- it cannot silently turn the
+    null into a binomial. It is returned clipped to ``[0, 0.5]``.
+    """
+    n = n.astype(np.float64)
+    denom = float(np.sum(n - 1.0))
+    if denom <= 0 or not (0.0 < mu < 1.0):
+        return 0.0
+    resid = (k.astype(np.float64) - n * mu) ** 2 / (n * mu * (1.0 - mu))
+    rho = (float(resid.sum()) - len(n)) / denom
+    if not np.isfinite(rho):
+        return 0.0
+    return float(min(max(rho, 0.0), 0.5))
+
+
+def _fit_beta_binomial(
+    k: np.ndarray,
+    n: np.ndarray,
+    truncation: Optional[float] = None,
+) -> Tuple[float, float, str]:
+    """ML fit of (mean, rho) for a beta-binomial.
+
+    Args:
+        k: Events per position.
+        n: Coverage per position.
+        truncation: If given, *k*/*n* is an upper-truncated sample -- only
+            positions with ``k_i / n_i < truncation`` were retained -- and the
+            likelihood is normalised accordingly:
+
+                loglik_i = logpmf(k_i; n_i, a, b)
+                           - log CDF(floor(truncation * n_i); n_i, a, b)
+
+            Each observation's truncation point depends on its own coverage.
+            ``None`` (the default) fits the ordinary, untruncated likelihood;
+            see ``docs/BACKGROUND_NULL_TRUNCATION.md`` for the simulation that
+            justifies that default at this pipeline's null rates.
+
+    Returns:
+        ``(mean, rho, fit_status)``. *fit_status* is 'ok', 'no_events' or
+        'nonconvergence'; on non-convergence *rho* is the method-of-moments
+        estimate (:func:`_moment_rho`), never 0, because ``rho = 0`` is a
+        plain binomial and is anti-conservative.
+    """
     total_k, total_n = float(k.sum()), float(n.sum())
+    if total_n <= 0:
+        return 0.001, 0.0, 'no_events'
     if total_k == 0:
-        # No events at all: half a pseudo-event keeps p-values finite
-        return 0.5 / total_n, 0.0
+        # No events at all: half a pseudo-event keeps p-values finite. There
+        # is no information about overdispersion in an all-zero sample.
+        return 0.5 / total_n, 0.0, 'no_events'
     mu0 = total_k / total_n
+
+    cut = None
+    uniq_n = inv_n = None
+    if truncation is not None:
+        # The truncation point is a function of coverage alone, so the CDF is
+        # evaluated once per distinct coverage and broadcast back.
+        cut_all = np.floor(truncation * n.astype(np.float64)).astype(np.int64)
+        # A position whose truncation point is below 0, or not above the
+        # observed count, carries no usable normalisation.
+        usable = (cut_all >= 0) & (cut_all >= k)
+        if usable.any():
+            k, n, cut_all = k[usable], n[usable], cut_all[usable]
+            uniq_n, inv_n = np.unique(n, return_inverse=True)
+            cut = np.floor(truncation * uniq_n.astype(np.float64)).astype(np.int64)
+            total_k, total_n = float(k.sum()), float(n.sum())
+            if total_k == 0:
+                return 0.5 / total_n, 0.0, 'no_events'
+            mu0 = total_k / total_n
+        else:
+            truncation = None
 
     def nll(t):
         mu, rho = expit(t[0]), expit(t[1])
         a = mu * (1 - rho) / rho
         b = (1 - mu) * (1 - rho) / rho
-        return -stats.betabinom.logpmf(k, n, a, b).sum()
+        lp = stats.betabinom.logpmf(k, n, a, b)
+        if truncation is not None:
+            cdf = stats.betabinom.cdf(cut, uniq_n, a, b)
+            # CDF at or near 0 underflows to -inf; clip so the optimiser sees
+            # a large finite penalty instead of a NaN it cannot escape.
+            lp = lp - np.log(np.clip(cdf, 1e-300, 1.0))[inv_n]
+        val = -lp.sum()
+        return val if np.isfinite(val) else 1e12
 
     res = minimize(nll, [logit(mu0), logit(1e-3)], method='Nelder-Mead',
                    options={'xatol': 1e-4, 'fatol': 1e-3, 'maxiter': 400})
-    if not np.isfinite(res.fun):
-        return mu0, 0.0
-    return float(expit(res.x[0])), float(expit(res.x[1]))
+    if not (res.success and np.isfinite(res.fun) and res.fun < 1e12):
+        # rho = 0 here would be a silent downgrade to a binomial null.
+        return mu0, _moment_rho(k, n, mu0), 'nonconvergence'
+    return float(expit(res.x[0])), float(expit(res.x[1])), 'ok'
+
+
+def _label(sample: Optional[str]) -> str:
+    """Log-message suffix naming the sample, or '' when it is unnamed."""
+    return f" in sample {sample}" if sample else ""
 
 
 def estimate_channel_backgrounds(
@@ -550,6 +664,8 @@ def estimate_channel_backgrounds(
     thresholds: Optional[Dict[str, float]] = None,
     max_positions: int = 5000,
     seed: int = 0,
+    truncation_correction: bool = False,
+    sample_label: Optional[str] = None,
 ) -> Dict[str, ChannelBackground]:
     """Fit a beta-binomial null per detection channel for one sample.
 
@@ -568,9 +684,20 @@ def estimate_channel_backgrounds(
             :data:`DEFAULT_CHANNEL_THRESHOLDS`).
         max_positions: Cap on positions per channel fit.
         seed: RNG seed for the subsample.
+        truncation_correction: Fit the *truncated* beta-binomial likelihood,
+            normalising each position's pmf by the probability mass below its
+            own truncation point. Default False: at the null rates this
+            pipeline measures (mean 1e-4 to 8e-4, rho 1e-3 to 7e-3) the cut
+            at half the calling threshold sits 20-40 sigma into the tail and
+            removes under 1e-4 of the mass, so the correction is numerically
+            inert while costing ~100x the fitting time. See
+            ``docs/BACKGROUND_NULL_TRUNCATION.md``. Turn it on if the
+            thresholds are lowered or a channel's null approaches the cut.
+        sample_label: Sample name, used only to name the sample in warnings.
 
     Returns:
-        {channel: ChannelBackground}.
+        {channel: ChannelBackground}. Check ``converged`` / ``fit_status``
+        before treating a null as properly fitted.
     """
     thresholds = thresholds or DEFAULT_CHANNEL_THRESHOLDS
 
@@ -600,17 +727,96 @@ def estimate_channel_backgrounds(
     for c in CHANNELS:
         k, n = k_all[c], n_all[c]
         if len(n) == 0:
-            backgrounds[c] = ChannelBackground(mean=0.001, source='default')
+            backgrounds[c] = ChannelBackground(
+                mean=0.001, source='default', converged=False,
+                fit_status='default')
+            logger.warning(
+                "No usable positions for channel '%s'%s; falling back to the "
+                "default null (mean 0.001, binomial). Calls from this channel "
+                "are not backed by a fitted background.",
+                c, _label(sample_label))
             continue
-        bulk = (k / n) < 0.5 * thresholds[c]
+        cut_rate = 0.5 * thresholds[c]
+        bulk = (k / n) < cut_rate
         k, n = k[bulk].astype(np.int64), n[bulk].astype(np.int64)
         if len(n) > max_positions:
             pick = rng.choice(len(n), max_positions, replace=False)
             k, n = k[pick], n[pick]
-        mean, rho = _fit_beta_binomial(k, n)
-        backgrounds[c] = ChannelBackground(mean=mean, rho=rho, source=source,
-                                           n_positions=len(n))
+        mean, rho, status = _fit_beta_binomial(
+            k, n, truncation=cut_rate if truncation_correction else None)
+        if status == 'nonconvergence':
+            logger.warning(
+                "Beta-binomial background fit did not converge for channel "
+                "'%s'%s (%d positions). Using the method-of-moments "
+                "overdispersion rho=%.3e instead of the ML estimate; the null "
+                "is flagged fit_status='nonconvergence'.",
+                c, _label(sample_label), len(n), rho)
+        elif status == 'no_events':
+            logger.warning(
+                "No events at all in channel '%s'%s (%d positions). The null "
+                "mean is a half-event pseudocount (%.3e) and rho is "
+                "uninformative; flagged fit_status='no_events'.",
+                c, _label(sample_label), len(n), mean)
+        backgrounds[c] = ChannelBackground(
+            mean=mean, rho=rho, source=source, n_positions=len(n),
+            converged=(status == 'ok'), fit_status=status)
     return backgrounds
+
+
+def pool_channel_backgrounds(
+    sample_backgrounds: Dict[str, Dict[str, ChannelBackground]],
+) -> Dict[str, Dict[str, ChannelBackground]]:
+    """Borrow overdispersion across samples for any null that failed to fit.
+
+    A background whose fit did not converge, or that saw no events, has no
+    likelihood-based *rho*. Leaving ``rho = 0`` makes it a plain binomial,
+    which understates the variance of a per-position null rate and so
+    overstates significance -- exactly the wrong direction for a background
+    model. Samples in one run share library chemistry and RT, so the median
+    *rho* of the channel's **converged** fits is a far better estimate than 0
+    and is still data-derived.
+
+    Only *rho* is pooled: *mean* is sample-specific (depth and batch move it)
+    and a failed fit still pins it down through the pooled event rate. A
+    pooled null is re-flagged ``fit_status='pooled_rho'`` and keeps
+    ``converged=False``, so it stays visibly degraded in the outputs.
+
+    Args:
+        sample_backgrounds: ``{sample: {channel: ChannelBackground}}``.
+
+    Returns:
+        A new dict of the same shape; inputs are not mutated. Unchanged if
+        every fit converged, or if a channel has no converged fit to borrow
+        from (in which case the warning says so).
+    """
+    pooled_rho = {}
+    for c in CHANNELS:
+        good = [bg.rho for bg in
+                (s.get(c) for s in sample_backgrounds.values())
+                if bg is not None and bg.converged and bg.rho > 0]
+        if good:
+            pooled_rho[c] = float(np.median(good))
+
+    out = {}
+    for sample, bgs in sample_backgrounds.items():
+        new = {}
+        for c, bg in bgs.items():
+            if bg.converged or c not in pooled_rho:
+                if not bg.converged and c not in pooled_rho:
+                    logger.warning(
+                        "Channel '%s'%s has a degraded null (%s) and no "
+                        "converged fit in any sample to pool rho from; it "
+                        "stays at rho=%.3e.",
+                        c, _label(sample), bg.fit_status, bg.rho)
+                new[c] = bg
+                continue
+            new[c] = replace(bg, rho=pooled_rho[c], fit_status='pooled_rho')
+            logger.warning(
+                "Channel '%s'%s had fit_status='%s'; rho replaced with the "
+                "cross-sample pooled value %.3e (was %.3e).",
+                c, _label(sample), bg.fit_status, pooled_rho[c], bg.rho)
+        out[sample] = new
+    return out
 
 
 def _bh_qvalues(pvals: np.ndarray, n_tests: int) -> np.ndarray:
@@ -1138,9 +1344,14 @@ class ModificationCaller:
             confidence. Per-channel columns: ``pvalue_*``, ``qvalue_*``,
             ``fold_change_*``; plus ``channels_fired``, ``dominant_channel``,
             ``pvalue`` (Bonferroni over channels, for replicate Fisher
-            combination), ``fold_change`` / ``background_error_rate`` of the
-            dominant channel, ``confidence``, ``channel_prior_factor`` and
-            ``unexpected_channel``.
+            combination), ``fold_change`` / ``background_error_rate`` /
+            ``background_rho`` / ``background_fit_status`` /
+            ``background_converged`` of the dominant channel, ``confidence``,
+            ``channel_prior_factor`` and ``unexpected_channel``.
+
+            ``background_converged`` is False wherever the null behind the
+            p-value was not a converged ML fit; filter on it before quoting
+            a call's significance.
         """
         if calls.empty:
             return calls
@@ -1183,6 +1394,17 @@ class ModificationCaller:
         df['fold_change'] = [rates[j, i] / means[i] if means[i] > 0 else np.nan
                              for j, i in enumerate(dom)]
         df['background_error_rate'] = means[dom]
+        # Null-model provenance for the dominant channel: a p-value from a
+        # degraded null (fit did not converge, no events, or pooled rho) is
+        # not interchangeable with one from a converged ML fit.
+        statuses = np.array([self.channel_backgrounds[c].fit_status
+                             for c in CHANNELS])
+        converged = np.array([self.channel_backgrounds[c].converged
+                              for c in CHANNELS])
+        rhos = np.array([self.channel_backgrounds[c].rho for c in CHANNELS])
+        df['background_rho'] = rhos[dom]
+        df['background_fit_status'] = statuses[dom]
+        df['background_converged'] = converged[dom]
         df['fdr_significant'] = bool(self.statistical_test)
 
         # Confidence: ranking score only. Effect size of the strongest fired

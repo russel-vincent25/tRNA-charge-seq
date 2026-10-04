@@ -43,6 +43,7 @@ import sys
 import time
 import json
 import shutil
+from collections import Counter
 from enum import Enum
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,6 +108,7 @@ try:
         CHANNELS,
         ModificationCaller,
         estimate_channel_backgrounds,
+        pool_channel_backgrounds,
         ReplicateAggregator,
     )
     from trnaseq.modifications.modomics import MODOMICSAnnotator
@@ -1659,9 +1661,14 @@ class PreprocessingPipeline:
                     pscm_dict, extractor.ref_dict,
                     synthetic_prefixes=synthetic_prefixes,
                     min_coverage=min_coverage,
+                    sample_label=snu,
                 )
                 for snu, pscm_dict in all_pscm.items()
             }
+            # A null whose ML fit failed has no likelihood-based rho. rho=0 is
+            # a plain binomial and is anti-conservative, so borrow the median
+            # rho of this channel's converged fits across samples instead.
+            sample_backgrounds = pool_channel_backgrounds(sample_backgrounds)
             for c in CHANNELS:
                 fits = [bg[c] for bg in sample_backgrounds.values()]
                 if fits:
@@ -1669,6 +1676,16 @@ class PreprocessingPipeline:
                         f"    {c:<8} mean {np.median([f.mean for f in fits]):.2e}, "
                         f"rho {np.median([f.rho for f in fits]):.2e} "
                         f"(median over samples; source: {fits[0].source})")
+                    degraded = [f for f in fits if not f.converged]
+                    if degraded:
+                        by_status = Counter(f.fit_status for f in degraded)
+                        self.log(
+                            f"      WARNING: {len(degraded)}/{len(fits)} samples have a "
+                            f"degraded {c} null ("
+                            + ", ".join(f"{k}={v}" for k, v in sorted(by_status.items()))
+                            + "); see bg_fit_status_* in modification_summary.csv "
+                              "and background_fit_status in modification_calls",
+                            level="WARN")
 
             # MODOMICS
             annotator = MODOMICSAnnotator(organism)
@@ -1874,6 +1891,10 @@ class PreprocessingPipeline:
                 for c in CHANNELS:
                     row[f'bg_mean_{c}'] = bgs[c].mean if bgs else np.nan
                     row[f'bg_rho_{c}'] = bgs[c].rho if bgs else np.nan
+                    # Null-model provenance: 'ok' is a converged ML fit;
+                    # anything else is a degraded null (see ChannelBackground)
+                    row[f'bg_fit_status_{c}'] = bgs[c].fit_status if bgs else None
+                    row[f'bg_converged_{c}'] = bgs[c].converged if bgs else False
                 summary_rows.append(row)
 
             summary_df = pd.DataFrame(summary_rows)

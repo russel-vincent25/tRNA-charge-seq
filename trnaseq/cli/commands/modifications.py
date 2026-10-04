@@ -139,7 +139,13 @@ def run_modifications(args):
         # Per-channel null for this sample
         backgrounds = estimate_channel_backgrounds(
             pscm_dict, extractor.ref_dict, min_coverage=args.min_coverage,
+            sample_label=sample_name,
         )
+        degraded = {c: bg.fit_status for c, bg in backgrounds.items()
+                    if not bg.converged}
+        if degraded:
+            print(f"  WARNING: degraded background null(s): {degraded} -- "
+                  f"see background_fit_status in modification_calls")
         caller = ModificationCaller(
             organism=args.organism,
             rt_enzyme=args.rt_enzyme,
