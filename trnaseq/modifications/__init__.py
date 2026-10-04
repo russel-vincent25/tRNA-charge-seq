@@ -22,6 +22,7 @@ from .modification_caller import (
     ChannelBackground,
     estimate_background_error_rate,
     estimate_channel_backgrounds,
+    pool_channel_backgrounds,
     ReplicateAggregator,
 )
 from .channel_priors import load_channel_priors, normalize_rt_enzyme
@@ -38,6 +39,7 @@ __all__ = [
     'estimate_background_error_rate',
     'ChannelBackground',
     'estimate_channel_backgrounds',
+    'pool_channel_backgrounds',
     'ReplicateAggregator',
     'load_channel_priors',
     'normalize_rt_enzyme',
