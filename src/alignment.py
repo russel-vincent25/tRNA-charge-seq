@@ -525,10 +525,17 @@ class SWIPE_align:
         # Calculate stats:
         if not self.from_UMIdir:
             map_p = N_mapped / Ninput * 100
-        elif row['N_after_downsample'] == 0:
-            map_p = 0
         else:
-            map_p = N_mapped / row['N_after_downsample'] * 100
+            # N_after_downsample only exists in memory after stage 0c; runs that
+            # start at stage 1 on a saved sample_df lack it. Ninput was counted
+            # from the same (in-place downsampled) UMI-trimmed file, so it is equal.
+            N_denom = row.get('N_after_downsample')
+            if N_denom is None or pd.isna(N_denom):
+                N_denom = Ninput
+            if N_denom == 0:
+                map_p = 0
+            else:
+                map_p = N_mapped / N_denom * 100
         # Multiple mappings have fasta IDs merged with "@":
         if N_mapped == 0:
             P_ma = 0
