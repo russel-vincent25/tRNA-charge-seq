@@ -19,6 +19,7 @@ Output:
 - inp_file_df.xlsx (input file summary)
 - sample_df.xlsx (sample information with QC metrics)
 - logs/pipeline.log, logs/computing_metrics.csv (operational files)
+- data/sample_stats/ (per-sample stage 0c/1 stats; merged into sample_df.xlsx)
 - data/stats_collection/ALL_stats_aggregate.csv (combined statistics)
 - results/charge/ (charge quantification + report, if enabled)
 - results/fragments/ (fragment classification + RT drop-off + report, if enabled)
@@ -66,6 +67,15 @@ from src.misc import (
 from src.read_processing import AR_merge, BC_split, UMI_trim
 from src.alignment import SWIPE_align
 from src.stats_collection import STATS_collection
+from trnaseq.io.sample_stats import (
+    SAMPLE_STATS_SUBDIR,
+    STAGE_COLUMNS,
+    assign_sample_values,
+    format_array_indices,
+    merge_sample_stats,
+    recompute_mapping_percent,
+    write_sample_stats,
+)
 
 # Optional imports for extended analysis stages
 try:
@@ -438,6 +448,22 @@ class PreprocessingPipeline:
                 report.add(CheckResult(
                     "umi_anchor", CheckStatus.FAIL,
                     "'umi_anchor' required when umi_trim_mode='anchored'",
+                    group=group))
+
+        # downsample_percentile needs every sample in one process
+        if '0c' in stages and self.config.get('downsample_percentile'):
+            if self.sample_index is not None:
+                report.add(CheckResult(
+                    "downsample_percentile", CheckStatus.FAIL,
+                    "not supported with --sample-index: each array task sees one "
+                    "sample, so the percentile is that sample's own read count.\n"
+                    "Use downsample_absolute (a fixed read count) instead.",
+                    group=group))
+            else:
+                report.add(CheckResult(
+                    "downsample_percentile", CheckStatus.WARN,
+                    "only valid when stage 0c runs as one process; it is rejected "
+                    "under --sample-index (SLURM array). Use downsample_absolute there.",
                     group=group))
 
         # seq_dir: warn if contains 'data/' (double-nested)
@@ -1075,6 +1101,16 @@ class PreprocessingPipeline:
         # Run UMI trimming
         downsample_percentile = self.config.get('downsample_percentile', None)
         downsample_absolute = self.config.get('downsample_absolute', None)
+        if downsample_percentile and self.sample_index is not None:
+            # UMI_trim takes the percentile over the samples it is given. An array
+            # task is given one, so the cap equals that sample's own read count and
+            # nothing is ever downsampled -- silently. Refuse instead.
+            raise ValueError(
+                "downsample_percentile is not supported with --sample-index (SLURM array): "
+                "each task sees one sample, so the percentile is that sample's own read "
+                "count and no sample is downsampled. Use downsample_absolute (a fixed read "
+                "count), or run stage 0c without --sample-index."
+            )
 
         # UMI trim mode: 'anchored' (default) or 'pyrimidine' (legacy)
         umi_mode = self.config.get('umi_trim_mode', 'anchored')
@@ -1105,22 +1141,16 @@ class PreprocessingPipeline:
             anchor_max_dist=self.config.get('umi_anchor_max_dist', 1),
             overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
             downsample_percentile=downsample_percentile,
-            downsample_absolute=downsample_absolute
+            downsample_absolute=downsample_absolute,
+            # Array tasks share UMI_trimmed/; one sample_stats.xlsx there would be
+            # last-writer-wins (or corrupt). Their stats go to data/sample_stats/.
+            write_stats_xlsx=self.sample_index is None,
         )
         result_df = UMItrim_obj.run_parallel(n_jobs=self.n_jobs)
-        if self.sample_index is not None:
-            # Merge single-sample results back into full sample_df
-            merge_cols = [c for c in result_df.columns if c not in self.sample_df.columns or c == 'sample_name_unique']
-            extra_cols = [c for c in result_df.columns if c not in self.sample_df.columns]
-            if extra_cols:
-                self.sample_df = self.sample_df.merge(
-                    result_df[['sample_name_unique'] + extra_cols],
-                    on='sample_name_unique', how='left')
-        else:
-            self.sample_df = result_df
+        self._record_stage_stats('0c', result_df)
 
-        # Log statistics
-        avg_umi_pct = self.sample_df['percent_UMI_obs-vs-exp'].mean()
+        # Log statistics (this run's samples only)
+        avg_umi_pct = result_df['percent_UMI_obs-vs-exp'].mean()
         self.log(f"  Average UMI obs/exp: {avg_umi_pct:.1f}%")
 
         if avg_umi_pct < 80:
@@ -1169,6 +1199,7 @@ class PreprocessingPipeline:
             common_seqs=common_seqs,
             overwrite_dir=self.config.get('overwrite', True) if self.sample_index is None else False,
             SWIPE_threads=self.threads_per_job,
+            write_stats_xlsx=self.sample_index is None,
         )
         # realign_overwrite: False lets stage 1 reuse a finished *_SWalign.json.bz2 instead of
         # realigning (the skip branch in SWIPE_align._start_SWIPE). Default True -- reuse is
@@ -1179,17 +1210,10 @@ class PreprocessingPipeline:
             self.log("  realign_overwrite=False: reusing existing alignments where present",
                      level="WARN")
         result_df = align_obj.run_parallel(n_jobs=self.n_jobs, overwrite=realign_overwrite)
-        if self.sample_index is not None:
-            merge_cols = [c for c in result_df.columns if c not in self.sample_df.columns]
-            if merge_cols:
-                self.sample_df = self.sample_df.merge(
-                    result_df[['sample_name_unique'] + merge_cols],
-                    on='sample_name_unique', how='left')
-        else:
-            self.sample_df = result_df
+        self._record_stage_stats('1', result_df)
 
-        # Log statistics
-        avg_mapping = self.sample_df['Mapping_percent'].mean()
+        # Log statistics (this run's samples only)
+        avg_mapping = result_df['Mapping_percent'].mean()
         self.log(f"  Average mapping rate: {avg_mapping:.1f}%")
 
         if avg_mapping < 80:
@@ -1238,13 +1262,8 @@ class PreprocessingPipeline:
                 )
 
             # Recalculate Mapping_percent from fragment counts:
-            # N_total_aligned / N_after_trim * 100
-            if 'N_after_trim' in self.sample_df.columns:
-                self.sample_df['Mapping_percent'] = np.where(
-                    self.sample_df['N_after_trim'] > 0,
-                    self.sample_df['N_total_aligned'] / self.sample_df['N_after_trim'] * 100,
-                    0.0
-                )
+            # N_total_aligned / N_after_downsample * 100 (N_after_trim as fallback)
+            self.sample_df = recompute_mapping_percent(self.sample_df)
 
         self.log(f"  Collected stats for {len(self.stats_df)} entries")
 
@@ -2169,8 +2188,7 @@ class PreprocessingPipeline:
         self.log(f"  Saved: {inp_file_output}")
 
         # Save sample_df
-        sample_df_output = self.project_dir / 'sample_df.xlsx'
-        self.sample_df.to_excel(sample_df_output, index=False)
+        sample_df_output = self._write_sample_df()
         self.log(f"  Saved: {sample_df_output}")
 
         # ALL_stats_aggregate.csv lives in data/stats_collection/ (no root copy)
@@ -2269,6 +2287,117 @@ class PreprocessingPipeline:
                 tRNA_database = self.config['tRNA_database']
                 self.tRNA_data = read_tRNAdb_info(tRNA_database)
 
+    # ------------------------------------------------------------------
+    # Per-sample stage 0c/1 stats (see trnaseq/io/sample_stats.py)
+    # ------------------------------------------------------------------
+
+    def _write_sample_df(self):
+        """Write sample_df.xlsx atomically; return its path.
+
+        Array tasks read sample_df.xlsx at start-up, so it must never be seen
+        half-written.
+        """
+        out = self.project_dir / 'sample_df.xlsx'
+        tmp = out.with_name(f'.sample_df.{os.getpid()}.tmp.xlsx')
+        try:
+            self.sample_df.to_excel(tmp, index=False)
+            os.replace(tmp, out)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        return out
+
+    def _record_stage_stats(self, stage, result_df):
+        """Write this stage's per-sample stats files and update self.sample_df.
+
+        In array mode only the task's own row is overwritten; the old
+        left-merge added missing columns but kept stale values for columns
+        sample_df.xlsx already had.
+        """
+        paths = write_sample_stats(self.project_dir, result_df, stage)
+        if self.sample_index is not None:
+            cols = [c for c in STAGE_COLUMNS[stage] if c in result_df.columns]
+            values = result_df.set_index('sample_name_unique')[cols]
+            self.sample_df = assign_sample_values(self.sample_df, values)
+        else:
+            self.sample_df = result_df
+        self.log(f"  Wrote stage {stage} stats for {len(paths)} sample(s) "
+                 f"to {SAMPLE_STATS_SUBDIR}/")
+
+    def _merge_sample_stats(self, stages):
+        """Merge per-sample stage 0c/1 stats files into self.sample_df.
+
+        Array mode: merge only this task's sample (so a stage-1-only task gets
+        N_after_downsample from its own stage 0c file) and never fail.
+
+        Aggregation mode: merge every sample. When this run includes stages
+        2-7, check each upstream stage (0c/1) it does not run itself: a sample
+        with neither a file nor values in sample_df means its array task failed
+        or never ran. Some missing -> raise (or warn when
+        allow_incomplete_sample_stats is true), listing the --array indices to
+        resubmit. All missing -> warn only: the project predates these files.
+        Writes sample_df.xlsx right after merging, so a later crash in stages
+        2-7 cannot lose the merged table.
+        """
+        if stages.intersection({'0a', '0b'}):
+            # Stage 0b rebuilds sample_df; files from earlier runs don't apply.
+            return
+
+        if self.sample_index is not None:
+            sample = self.sample_df.iloc[self.sample_index]['sample_name_unique']
+            self.sample_df, _ = merge_sample_stats(
+                self.sample_df, self.project_dir, samples=[sample])
+            return
+
+        self.sample_df, status = merge_sample_stats(self.sample_df, self.project_dir)
+        for st in status.values():
+            if st.n_files:
+                self.log(f"  Merged stage {st.stage} stats for {st.n_files}/{st.n_samples} "
+                         f"samples from {SAMPLE_STATS_SUBDIR}/")
+
+        downstream = stages.intersection({'2', '3', '4', '5', '6', '7'})
+        incomplete = []
+        for stage, st in status.items():
+            if not downstream or stage in stages or st.complete:
+                continue
+            if len(st.missing) == st.n_samples:
+                cols = ', '.join(STAGE_COLUMNS[stage])
+                self.log(f"WARNING: No stage {stage} stats for any sample (neither "
+                         f"{SAMPLE_STATS_SUBDIR}/ files nor sample_df.xlsx columns). "
+                         f"{cols} will be missing from sample_df.xlsx and the QC report. "
+                         f"Array runs from before per-sample stats files existed did not "
+                         f"save them; re-running stage {stage} regenerates them.",
+                         level="WARN")
+            else:
+                incomplete.append(st)
+
+        if incomplete:
+            lines = []
+            all_idx = set()
+            for st in incomplete:
+                idx = [i for i, _ in st.missing]
+                all_idx.update(idx)
+                names = [s for _, s in st.missing]
+                shown = ', '.join(names[:10]) + (f', ... (+{len(names) - 10})' if len(names) > 10 else '')
+                lines.append(f"  stage {st.stage}: {len(st.missing)}/{st.n_samples} samples "
+                             f"missing (array indices {format_array_indices(idx)}): {shown}")
+            msg = ("Per-sample stats are incomplete:\n" + '\n'.join(lines) + "\n"
+                   f"Each array task writes {SAMPLE_STATS_SUBDIR}/{{sample}}.stage{{0c,1}}.json when "
+                   "it finishes; these samples have no file and no values in sample_df.xlsx, so "
+                   "their task failed or never ran. Re-run them with:\n"
+                   f"  sbatch --array={format_array_indices(all_idx)} hpc/slurm/stage0c_1.job "
+                   f"{self.config_file} {self.project_dir}\n"
+                   "or set allow_incomplete_sample_stats: true in the config to continue without them.")
+            if self.config.get('allow_incomplete_sample_stats', False):
+                self.log("WARNING: " + msg, level="WARN")
+            else:
+                self.log(msg, level="ERROR")
+                raise RuntimeError(msg)
+
+        if any(st.n_files for st in status.values()):
+            out = self._write_sample_df()
+            self.log(f"  Saved merged sample_df: {out}")
+
     def run(self, stages=None):
         """
         Run preprocessing pipeline.
@@ -2332,6 +2461,9 @@ class PreprocessingPipeline:
 
             # Load prerequisites for later stages when skipping early ones
             self._load_prerequisites(stages)
+
+            # Merge per-sample stage 0c/1 stats written by SLURM array tasks
+            self._merge_sample_stats(stages)
 
             # Run preprocessing stages (0-2)
             if '0a' in stages:

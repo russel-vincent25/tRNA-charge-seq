@@ -668,14 +668,16 @@ class UMI_trim:
     UMI_bins -- Number of possible UMIs (default depends on mode)
     downsample_absolute -- Maximum number of trimmed UMI sequences, randomly choose for downsampling (default 2e6)
     downsample_percentile -- Determine the 'downsample_absolute' variable as a percentile of the number of trimmed UMI sequences in all input samples (default False)
+    write_stats_xlsx -- Write sample_stats.xlsx to the UMI folder. Set False when several processes share the folder, e.g. SLURM array tasks (default True)
     '''
     def __init__(self, dir_dict, sample_df, mode='anchored',
                  anchor_seq=None, max_stagger=3, anchor_max_dist=1,
                  UMI_end={'T', 'C'},
                  overwrite_dir=False, check_input=True, UMI_len=10,
                  UMI_bins=None, downsample_absolute=2e6,
-                 downsample_percentile=False):
+                 downsample_percentile=False, write_stats_xlsx=True):
         self.mode = mode
+        self.write_stats_xlsx = write_stats_xlsx
         if mode == 'anchored':
             if anchor_seq is None:
                 raise ValueError("anchor_seq is required when mode='anchored'")
@@ -846,7 +848,8 @@ class UMI_trim:
         new_colnames = colnames[:-3] + colnames[-2:] + [colnames[-3]]
         self.sample_df = self.sample_df.loc[:, new_colnames].copy()
         # Dump stats as Excel file:
-        self.sample_df.to_excel('{}/sample_stats.xlsx'.format(self.UMI_dir_abs))
+        if self.write_stats_xlsx:
+            self.sample_df.to_excel('{}/sample_stats.xlsx'.format(self.UMI_dir_abs))
 
 
 

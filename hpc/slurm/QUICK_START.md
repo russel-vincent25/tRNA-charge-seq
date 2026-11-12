@@ -72,6 +72,7 @@ project_dir/
 │   ├── BC_split/                    # Barcode-split FASTQs
 │   ├── UMI_trimmed/                 # UMI-trimmed reads
 │   ├── SWalign/                     # Alignment JSONs
+│   ├── sample_stats/                # Per-sample stage 0c/1 stats from array tasks
 │   └── stats_collection/            # Per-sample + aggregate stats
 ├── results/
 │   ├── charge/                      # charge_df_{aa,codon,transcript}.csv
@@ -161,6 +162,17 @@ process. The launcher auto-sizes all resources based on sample count.
 
 Job logs go to `/home/$USER/jobOutput/tseq-*.out` and `*.err`.
 Email notifications (BEGIN, END, FAIL) are sent for each job.
+
+**Per-sample stats:** array tasks never write `sample_df.xlsx` (hundreds of tasks
+would race on it). Each task writes its sample's stage 0c columns (`N_after_trim`,
+`N_UMI_*`, `N_after_downsample`, ...) and stage 1 columns (`N_mapped`,
+`Mapping_percent`, ...) to `data/sample_stats/{sample}.stage0c.json` and
+`.stage1.json`. JOB2 merges them into `sample_df.xlsx` before stage 2, so the QC
+report gets its mapping-rate and UMI-saturation panels. A sample with no file (and
+no values already in `sample_df.xlsx`) stops JOB2 straight away; see section 8.
+
+**Downsampling:** `downsample_percentile` can't work in an array (each task sees one
+sample), so the launcher and stage 0c both refuse it. Use `downsample_absolute`.
 
 ---
 
@@ -286,6 +298,24 @@ sbatch --array=5,12 $REPO/hpc/slurm/stage0c_1.job "$CONFIG" "$PROJECT_DIR"
 sbatch $REPO/hpc/slurm/stage2_6.job "$CONFIG" "$PROJECT_DIR"
 ```
 
+If you start the aggregation by hand while some tasks are missing, it stops before
+stage 2 with a message like:
+
+```
+Per-sample stats are incomplete:
+  stage 0c: 2/264 samples missing (array indices 5,12): PJ39-02-R2, PJ39-04-R1
+  stage 1: 2/264 samples missing (array indices 5,12): PJ39-02-R2, PJ39-04-R1
+...
+  sbatch --array=5,12 hpc/slurm/stage0c_1.job <config> <project_dir>
+```
+
+Resubmit those indices, then re-run aggregation. To go ahead without them anyway, set
+`allow_incomplete_sample_stats: true` in the config (their QC columns stay blank).
+
+Projects whose array ran before per-sample stats files existed have none at all.
+JOB2 then only warns, and the QC report leaves out the UMI and mapping-rate
+panels. Re-running stages 0c/1 for every sample brings them back.
+
 To re-run only specific analysis stages (e.g., just modifications):
 
 ```bash
@@ -331,7 +361,7 @@ rm -rf results/ qc_reports/ logs/
 rm -f inp_file_df.xlsx sample_df.xlsx
 
 # Remove per-sample data (forces full reprocess)
-rm -rf data/AdapterRemoval data/BC_split data/UMI_trimmed data/SWalign data/stats_collection
+rm -rf data/AdapterRemoval data/BC_split data/UMI_trimmed data/SWalign data/sample_stats data/stats_collection
 
 # Pull latest code and reinstall
 cd /home/$USER/github_repos/tRNA-charge-seq
@@ -359,5 +389,8 @@ bash hpc/slurm/submit_pipeline.sh "$PROJECT_DIR/config.yaml" "$PROJECT_DIR"
 | `FileNotFoundError: sample_list` | Check sample list is in `$PROJECT_DIR` |
 | `FileNotFoundError: raw_fastq` | Check path: `ls $PROJECT_DIR/data/raw_fastq/` |
 | Stage 2 fails (no stats) | Check JOB1 logs — some array tasks may have failed |
+| `Per-sample stats are incomplete` | Resubmit the printed `--array=` indices (section 8) |
+| `No stage 0c stats for any sample` (WARN) | Array ran before stats files existed; re-run 0c/1 to fill QC columns |
+| `downsample_percentile is not supported with --sample-index` | Use `downsample_absolute: <reads>` in the config |
 | `tRNA_database` not found | Verify absolute path in config exists on O2 |
 | `swipe: command not found` | Conda env not activated — check `.job` module load |

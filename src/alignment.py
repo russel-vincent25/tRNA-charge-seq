@@ -32,11 +32,14 @@ class SWIPE_align:
     from_UMIdir -- Is the input data from a folder made with the UMI_trim class? (default True)
     check_input -- Check if input files exist (default True)
     verbose -- Verbose printing (default True)
+    write_stats_xlsx -- Write sample_stats.xlsx to the alignment folder. Set False when several processes share the folder, e.g. SLURM array tasks (default True)
     '''
     def __init__(self, dir_dict, tRNA_database, sample_df, score_mat, \
                  gap_penalty=6, extension_penalty=1, min_score_align=15, \
                  common_seqs=None, overwrite_dir=False, SWIPE_threads=4, \
-                 from_UMIdir=True, check_input=True, verbose=True):
+                 from_UMIdir=True, check_input=True, verbose=True, \
+                 write_stats_xlsx=True):
+        self.write_stats_xlsx = write_stats_xlsx
         # Swipe command template:
         self.swipe_cmd_tmp = 'swipe\t--query\tINPUT_FILE\t--db\tDATABASE_FILE\t--out\tOUTPUT_FILE\t--symtype\t1\t--outfmt\t7\t--num_alignments\t11\t--num_descriptions\t11\t--evalue\t0.000000001\t--num_threads\tTHREADS\t--strand\t1\t--matrix\tSCORE_MATRIX\t-G\tGAP_PENALTY\t-E\tEXTENSION_PENALTY\t--min_score\tMIN_SCORE'
         self.swipe_cmd_tmp = self.swipe_cmd_tmp.replace('SCORE_MATRIX', score_mat)
@@ -602,7 +605,8 @@ class SWIPE_align:
         self.sample_df = self.sample_df.drop(columns=['N_mapped', 'percent_single_annotation', 'percent_multiple_annotation', 'percent_multiple_codons', 'Mapping_percent'], errors='ignore')
         self.sample_df = self.sample_df.merge(stats_df, on=['sample_name_unique'])
         # Write stats:
-        self.sample_df.to_excel('sample_stats.xlsx')
+        if self.write_stats_xlsx:
+            self.sample_df.to_excel('sample_stats.xlsx')
 
 
 def indices(lst, element):

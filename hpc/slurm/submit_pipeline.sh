@@ -71,6 +71,20 @@ if ! python -m trnaseq pipeline --config "$CONFIG" --project-dir "$PROJECT_DIR" 
 fi
 echo ""
 
+# --- Array guard: stage 0c runs one sample per task, so a percentile cap is meaningless ---
+# (exit 0 = downsample_percentile is set)
+if python3 -c "
+import sys, yaml
+with open('$CONFIG') as f:
+    cfg = yaml.safe_load(f) or {}
+sys.exit(0 if cfg.get('downsample_percentile') else 1)
+"; then
+    echo "ERROR: downsample_percentile is set in $CONFIG, but this launcher runs stage 0c"
+    echo "       as a SLURM array (one sample per task), where a percentile cannot be"
+    echo "       computed. Use 'downsample_absolute: <reads>' or 'downsample_percentile: null'."
+    exit 1
+fi
+
 # --- Ensure jobOutput directory exists ---
 mkdir -p /home/ruv988/jobOutput
 

@@ -163,8 +163,16 @@ umi_max_stagger: 3
 umi_anchor_max_dist: 1
 
 # Downsampling
-downsample_percentile: 50              # null for no downsampling
-downsample_absolute: null              # Or fixed read count
+downsample_percentile: null            # e.g. 50 = cap every sample at the median read count.
+                                       # Single-process stage 0c only: rejected under
+                                       # --sample-index and by the SLURM launcher, where each
+                                       # array task sees one sample. Use downsample_absolute there.
+downsample_absolute: null              # Or a fixed read count (works in array mode)
+
+# SLURM array runs
+allow_incomplete_sample_stats: false   # true = the aggregation run continues when some array
+                                       # tasks left no stage 0c/1 stats (default: stop and list
+                                       # the --array indices to resubmit)
 
 # Stage 3: Charge + Fragments
 run_charge_quantification: true
@@ -248,6 +256,7 @@ project_dir/
 │   ├── BC_split/                    # Barcode-split FASTQs
 │   ├── UMI_trimmed/                 # UMI-trimmed reads
 │   ├── SWalign/                     # Alignment JSONs (*.json.bz2)
+│   ├── sample_stats/                # Per-sample stage 0c/1 stats (merged into sample_df.xlsx)
 │   └── stats_collection/            # Per-sample stats + ALL_stats_aggregate.csv
 ├── results/
 │   ├── charge/                      # charge_df_{aa,codon,transcript}.csv
@@ -331,6 +340,11 @@ This auto-detects sample count and submits 3 chained jobs:
 - **JOB0** (stage0ab): Merge + barcode split
 - **JOB1** (stage0c_1, array): UMI + alignment (1 task per sample)
 - **JOB2** (stage2_6): Stats + charge + fragments + QC + modifications + abundance
+
+Array tasks don't write `sample_df.xlsx`. Each one writes its sample's UMI-trim and
+alignment stats to `data/sample_stats/{sample}.stage{0c,1}.json`, and JOB2 merges them
+into `sample_df.xlsx` before stage 2. If some samples have no stats, JOB2 stops at
+once and prints the `--array` indices to resubmit.
 
 Resources are auto-scaled based on sample count. See [`hpc/slurm/QUICK_START.md`](hpc/slurm/QUICK_START.md) for the full deployment guide.
 
